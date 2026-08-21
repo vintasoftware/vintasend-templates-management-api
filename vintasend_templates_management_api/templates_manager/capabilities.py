@@ -17,8 +17,6 @@ notification capability, so a client that already reads one map needs no transla
 read this one.
 """
 
-from typing import Any
-
 from vintasend_managed_templates.base_template_manager_backend import (
     BaseTemplateManagerBackend,
 )
@@ -109,7 +107,7 @@ def get_backend_capabilities(backend: BaseTemplateManagerBackend) -> dict[str, b
     Values are coerced to ``bool`` so a backend returning a truthy non-boolean cannot put a
     non-boolean into a response the contract types as ``boolean``.
     """
-    reported: dict[str, Any] = {}
+    reported: dict[str, object] = {}
 
     report = getattr(backend, "get_filter_capabilities", None)
     if callable(report):

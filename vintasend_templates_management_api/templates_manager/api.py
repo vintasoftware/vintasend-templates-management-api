@@ -10,12 +10,13 @@ point: this API is one more caller of it, not a second implementation of it.
 
 import logging
 from collections.abc import Sequence
-from typing import Any
+from typing import TypeVar
 
 from django.http import Http404, HttpRequest, HttpResponse, JsonResponse
-from ninja import NinjaAPI, Query, Status
+from ninja import NinjaAPI, Query, Schema, Status
 from ninja.errors import AuthenticationError, ValidationError
 
+from pydantic import JsonValue
 from vintasend_managed_templates.constants import ManagedTemplateStatus, ManagedTemplateTagStatus
 from vintasend_managed_templates.dataclasses import (
     ManagedTemplate,
@@ -66,26 +67,30 @@ from .service import ServiceCaller, describe_missing, get_service_caller
 
 logger = logging.getLogger(__name__)
 
+# The row type of a page sliced by `_paginate`, so a page comes back as a list of whatever
+# went in rather than a list of `Any`.
+RowT = TypeVar("RowT")
+
 TemplatePage = PaginatedResponse[ManagedTemplateOut]
 TagPage = PaginatedResponse[ManagedTemplateTagOut]
 
 # Error responses are produced by the exception handlers below rather than returned from a
 # view, so they are declared purely so the generated schema documents them. Each route
 # declares the subset it can actually produce.
-LIST_ERRORS: dict[int, Any] = {400: ApiErrorResponse, 401: ApiErrorResponse}
-LOOKUP_ERRORS: dict[int, Any] = {401: ApiErrorResponse, 404: ApiErrorResponse}
-WRITE_ERRORS: dict[int, Any] = {
+LIST_ERRORS: dict[int, type[Schema]] = {400: ApiErrorResponse, 401: ApiErrorResponse}
+LOOKUP_ERRORS: dict[int, type[Schema]] = {401: ApiErrorResponse, 404: ApiErrorResponse}
+WRITE_ERRORS: dict[int, type[Schema]] = {
     400: ApiErrorResponse,
     401: ApiErrorResponse,
     404: ApiErrorResponse,
 }
 # 409 covers both CONFLICT and INVALID_STATUS_TRANSITION; the body's `code` says which.
-STATUS_ERRORS: dict[int, Any] = {**WRITE_ERRORS, 409: ApiErrorResponse}
-PREVIEW_ERRORS: dict[int, Any] = {**WRITE_ERRORS, 409: ApiErrorResponse}
+STATUS_ERRORS: dict[int, type[Schema]] = {**WRITE_ERRORS, 409: ApiErrorResponse}
+PREVIEW_ERRORS: dict[int, type[Schema]] = {**WRITE_ERRORS, 409: ApiErrorResponse}
 # 409 here is TEMPLATE_COMPOSITION_ERROR: the template exists and cannot be assembled.
-COMPOSITION_ERRORS: dict[int, Any] = {**LOOKUP_ERRORS, 409: ApiErrorResponse}
+COMPOSITION_ERRORS: dict[int, type[Schema]] = {**LOOKUP_ERRORS, 409: ApiErrorResponse}
 # Creating a tag whose text already slugs onto an existing one is a CONFLICT.
-TAG_CREATE_ERRORS: dict[int, Any] = {
+TAG_CREATE_ERRORS: dict[int, type[Schema]] = {
     400: ApiErrorResponse,
     401: ApiErrorResponse,
     409: ApiErrorResponse,
@@ -115,9 +120,9 @@ api = NinjaAPI(
 
 
 def _envelope(
-    request: HttpRequest, code: str, message: str, details: Any | None = None
+    request: HttpRequest, code: str, message: str, details: JsonValue | None = None
 ) -> HttpResponse:
-    error: dict[str, Any] = {"code": code, "message": message}
+    error: dict[str, JsonValue] = {"code": code, "message": message}
     if details is not None:
         error["details"] = details
     return JsonResponse({"error": error}, status=STATUS_BY_CODE[code])
@@ -160,18 +165,21 @@ def handle_validation_error(request: HttpRequest, exc: ValidationError) -> HttpR
     leading source segment and Ninja's synthetic argument name are dropped so the reported
     path is the field name the client actually sent.
     """
-    issues = [
+    # Annotated rather than inferred: pydantic types an error dict's values loosely, so
+    # without this the list infers as `list[dict[str, Any]]` and the `Any` would ride into
+    # the response body untyped.
+    issues: list[JsonValue] = [
         {
             "path": ".".join(str(part) for part in _issue_path(issue.get("loc", ()))),
-            "message": issue.get("msg", ""),
+            "message": str(issue.get("msg", "")),
         }
         for issue in exc.errors
     ]
     return _envelope(request, "BAD_REQUEST", "Invalid request.", {"issues": issues})
 
 
-def _issue_path(loc: Any) -> list[Any]:
-    parts = list(loc)
+def _issue_path(loc: Sequence[str | int]) -> list[str | int]:
+    parts: list[str | int] = list(loc)
     if parts and parts[0] in REQUEST_SOURCES:
         parts = parts[1:]
     if parts and parts[0] in SYNTHETIC_ARGUMENT_NAMES:
@@ -207,8 +215,8 @@ def _out(service: ServiceCaller, template: ManagedTemplate) -> ManagedTemplateOu
     return serialize_template(template, service.allowed_transitions(template))
 
 
-def _data(service: ServiceCaller, template: ManagedTemplate) -> dict[str, Any]:
-    return {"data": _out(service, template)}
+def _data(service: ServiceCaller, template: ManagedTemplate) -> DataResponse[ManagedTemplateOut]:
+    return DataResponse[ManagedTemplateOut](data=_out(service, template))
 
 
 def _set_tag_status(slug: str, status: ManagedTemplateTagStatus) -> ManagedTemplateTag:
@@ -225,7 +233,7 @@ def statuses_from_tags(values: Sequence[str]) -> list[ManagedTemplateTagStatus]:
     return [ManagedTemplateTagStatus(value) for value in values]
 
 
-def _paginate(rows: list[Any], page: int, page_size: int) -> list[Any]:
+def _paginate(rows: list[RowT], page: int, page_size: int) -> list[RowT]:
     """Slice a 1-indexed page in process.
 
     Unlike the template list -- which pushes paging down to the backend -- the tag seam has
@@ -239,7 +247,7 @@ def _paginate(rows: list[Any], page: int, page_size: int) -> list[Any]:
 
 def _change_status(
     key: str, status: ManagedTemplateStatus, payload: StatusChangeBody
-) -> dict[str, Any]:
+) -> DataResponse[ManagedTemplateOut]:
     """Body shared by the four status routes, which differ only in how the target is chosen."""
     service = get_service_caller()
     template = service.set_status(key, status, payload.version, payload.changedBy)
@@ -254,13 +262,13 @@ def _change_status(
     response={200: DataResponse[dict[str, bool]], 401: ApiErrorResponse},
     tags=["system"],
 )
-def get_capabilities(request: HttpRequest) -> dict[str, Any]:
+def get_capabilities(request: HttpRequest) -> DataResponse[dict[str, bool]]:
     """Which filters the configured template backend can honour.
 
     Note there are no ``orderBy.*`` keys: the template-manager seam takes no ordering
     argument, so the list endpoint offers no ordering to negotiate. See ``capabilities.py``.
     """
-    return {"data": get_service_caller().get_capabilities()}
+    return DataResponse[dict[str, bool]](data=get_service_caller().get_capabilities())
 
 
 # --- templates -----------------------------------------------------------------------
@@ -271,7 +279,7 @@ def get_capabilities(request: HttpRequest) -> dict[str, Any]:
     response={200: TemplatePage, **LIST_ERRORS},
     tags=["templates"],
 )
-def list_templates(request: HttpRequest, query: Query[TemplateListQuery]) -> dict[str, Any]:
+def list_templates(request: HttpRequest, query: Query[TemplateListQuery]) -> TemplatePage:
     """List templates matching the filters -- one row per key by default.
 
     A row in the store is a *version*, so an unfiltered read of the seam returns a key once
@@ -292,14 +300,14 @@ def list_templates(request: HttpRequest, query: Query[TemplateListQuery]) -> dic
     )
 
     data = [_out(service, template) for template in templates]
-    return {
-        "data": data,
-        "page": query.page,
-        "pageSize": query.pageSize,
+    return TemplatePage(
+        data=data,
+        page=query.page,
+        pageSize=query.pageSize,
         # True when the page came back full, meaning another page may exist. The seam has
         # no count method, so no total is available.
-        "hasMore": len(data) == query.pageSize,
-    }
+        hasMore=len(data) == query.pageSize,
+    )
 
 
 @api.post(
@@ -342,7 +350,7 @@ def create_template(request: HttpRequest, payload: CreateTemplateBody) -> Status
     response={200: ListResponse[ManagedTemplateOut], **LOOKUP_ERRORS},
     tags=["templates"],
 )
-def list_template_versions(request: HttpRequest, key: str) -> dict[str, Any]:
+def list_template_versions(request: HttpRequest, key: str) -> ListResponse[ManagedTemplateOut]:
     """Every version of one template, newest version first.
 
     The service resolves this by filtering on the key, which matches nothing for a key that
@@ -356,7 +364,7 @@ def list_template_versions(request: HttpRequest, key: str) -> dict[str, Any]:
     if not versions:
         raise ApiError.not_found(describe_missing(key, None))
 
-    return {"data": [_out(service, template) for template in versions]}
+    return ListResponse[ManagedTemplateOut](data=[_out(service, template) for template in versions])
 
 
 @api.post(
@@ -391,7 +399,9 @@ def create_template_version(request: HttpRequest, key: str, payload: CreateVersi
     response={200: DataResponse[ManagedTemplateOut], **LOOKUP_ERRORS},
     tags=["templates"],
 )
-def get_template_version(request: HttpRequest, key: str, version: int) -> dict[str, Any]:
+def get_template_version(
+    request: HttpRequest, key: str, version: int
+) -> DataResponse[ManagedTemplateOut]:
     service = get_service_caller()
     return _data(service, service.get_template(key, version))
 
@@ -414,7 +424,7 @@ def delete_template_version(request: HttpRequest, key: str, version: int) -> Sta
 )
 def get_template_composition(
     request: HttpRequest, key: str, query: Query[VersionQuery]
-) -> dict[str, Any]:
+) -> DataResponse[TemplateCompositionOut]:
     """One version assembled the way the template engine will receive it.
 
     A managed template can build on another: ``{% managed_extends "base" %}`` to fill a
@@ -437,14 +447,14 @@ def get_template_composition(
     service = get_service_caller()
     template = service.get_template(key, query.version)
     composed = service.get_composed_template(key, query.version)
-    return {
-        "data": serialize_composition(
+    return DataResponse[TemplateCompositionOut](
+        data=serialize_composition(
             template,
             composed,
             service.get_template_references(template),
             service.is_abstract(template),
         )
-    }
+    )
 
 
 @api.get(
@@ -454,7 +464,7 @@ def get_template_composition(
 )
 def get_status_history(
     request: HttpRequest, key: str, query: Query[StatusHistoryQuery]
-) -> dict[str, Any]:
+) -> ListResponse[TemplateStatusHistoryOut]:
     """The status audit trail, most recent change first.
 
     Omitting ``version`` asks for the whole key's history, which backends that keep it that
@@ -463,7 +473,9 @@ def get_status_history(
     """
     service = get_service_caller()
     history = service.get_status_history(key, query.version)
-    return {"data": [serialize_status_history(record) for record in history]}
+    return ListResponse[TemplateStatusHistoryOut](
+        data=[serialize_status_history(record) for record in history]
+    )
 
 
 @api.post(
@@ -471,7 +483,9 @@ def get_status_history(
     response={200: DataResponse[ManagedTemplateOut], **STATUS_ERRORS},
     tags=["statuses"],
 )
-def set_template_status(request: HttpRequest, key: str, payload: SetStatusBody) -> dict[str, Any]:
+def set_template_status(
+    request: HttpRequest, key: str, payload: SetStatusBody
+) -> DataResponse[ManagedTemplateOut]:
     """Move one version to an explicitly named status.
 
     Setting a version to the status it already holds is a no-op the service reports as
@@ -491,7 +505,7 @@ def set_template_status(request: HttpRequest, key: str, payload: SetStatusBody) 
 )
 def activate_template(
     request: HttpRequest, key: str, payload: StatusChangeBody = DEFAULT_STATUS_CHANGE_BODY
-) -> dict[str, Any]:
+) -> DataResponse[ManagedTemplateOut]:
     """Publish one version.
 
     Other versions of the same key that are already active are left alone: a key may hold
@@ -508,7 +522,7 @@ def activate_template(
 )
 def deactivate_template(
     request: HttpRequest, key: str, payload: StatusChangeBody = DEFAULT_STATUS_CHANGE_BODY
-) -> dict[str, Any]:
+) -> DataResponse[ManagedTemplateOut]:
     """Retire one version without archiving it, so it can be activated again later."""
     return _change_status(key, ManagedTemplateStatus.INACTIVE, payload)
 
@@ -520,7 +534,7 @@ def deactivate_template(
 )
 def archive_template(
     request: HttpRequest, key: str, payload: StatusChangeBody = DEFAULT_STATUS_CHANGE_BODY
-) -> dict[str, Any]:
+) -> DataResponse[ManagedTemplateOut]:
     """Archive one version. Terminal under the default lifecycle: an archived version has
     no allowed transitions, and publishing a new version is the way forward from there."""
     return _change_status(key, ManagedTemplateStatus.ARCHIVED, payload)
@@ -533,7 +547,7 @@ def archive_template(
 )
 def preview_template(
     request: HttpRequest, key: str, payload: PreviewBody = DEFAULT_PREVIEW_BODY
-) -> dict[str, Any]:
+) -> DataResponse[TemplatePreviewOut]:
     """Render a version against a supplied context, whatever its status.
 
     Pinning ``version`` is the point: it is what lets a draft be reviewed before anyone
@@ -544,7 +558,9 @@ def preview_template(
     """
     service = get_service_caller()
     template = service.get_template(key, payload.version)
-    return {"data": build_template_preview(service, template, payload.context)}
+    return DataResponse[TemplatePreviewOut](
+        data=build_template_preview(service, template, payload.context)
+    )
 
 
 @api.put(
@@ -554,7 +570,7 @@ def preview_template(
 )
 def set_template_tags(
     request: HttpRequest, key: str, payload: SetTemplateTagsBody
-) -> dict[str, Any]:
+) -> DataResponse[ManagedTemplateOut]:
     """Replace one version's tags, creating any tag that does not exist yet.
 
     A PUT that edits a version in place, unlike every other write on a template -- which
@@ -577,7 +593,7 @@ def set_template_tags(
     response={200: TagPage, **LIST_ERRORS},
     tags=["tags"],
 )
-def list_tags(request: HttpRequest, query: Query[TagListQuery]) -> dict[str, Any]:
+def list_tags(request: HttpRequest, query: Query[TagListQuery]) -> TagPage:
     """List tags, newest filter first: by status, by a text search, or by tenant.
 
     A tag picker wants ``?status=active``: archived tags are still attached to the templates
@@ -591,12 +607,12 @@ def list_tags(request: HttpRequest, query: Query[TagListQuery]) -> dict[str, Any
     )
 
     page = _paginate(tags, query.page, query.pageSize)
-    return {
-        "data": [serialize_tag(tag) for tag in page],
-        "page": query.page,
-        "pageSize": query.pageSize,
-        "hasMore": len(page) == query.pageSize,
-    }
+    return TagPage(
+        data=[serialize_tag(tag) for tag in page],
+        page=query.page,
+        pageSize=query.pageSize,
+        hasMore=len(page) == query.pageSize,
+    )
 
 
 @api.post(
@@ -612,7 +628,8 @@ def create_tag(request: HttpRequest, payload: CreateTagBody) -> Status:
     a template would silently resolve to the tag already there.
     """
     service = get_service_caller()
-    return Status(201, {"data": serialize_tag(service.create_tag(payload.text, payload.tenant))})
+    created = service.create_tag(payload.text, payload.tenant)
+    return Status(201, DataResponse[ManagedTemplateTagOut](data=serialize_tag(created)))
 
 
 @api.get(
@@ -620,9 +637,11 @@ def create_tag(request: HttpRequest, payload: CreateTagBody) -> Status:
     response={200: DataResponse[ManagedTemplateTagOut], **LOOKUP_ERRORS},
     tags=["tags"],
 )
-def get_tag(request: HttpRequest, slug: str) -> dict[str, Any]:
+def get_tag(request: HttpRequest, slug: str) -> DataResponse[ManagedTemplateTagOut]:
     """One tag. The path accepts the tag's slug or the text it was created from."""
-    return {"data": serialize_tag(get_service_caller().get_tag(slug))}
+    return DataResponse[ManagedTemplateTagOut](
+        data=serialize_tag(get_service_caller().get_tag(slug))
+    )
 
 
 @api.patch(
@@ -630,7 +649,9 @@ def get_tag(request: HttpRequest, slug: str) -> dict[str, Any]:
     response={200: DataResponse[ManagedTemplateTagOut], **WRITE_ERRORS},
     tags=["tags"],
 )
-def update_tag(request: HttpRequest, slug: str, payload: UpdateTagBody) -> dict[str, Any]:
+def update_tag(
+    request: HttpRequest, slug: str, payload: UpdateTagBody
+) -> DataResponse[ManagedTemplateTagOut]:
     """Rename a tag. Its slug is regenerated, so its URL changes.
 
     The templates carrying the tag keep it, but a stored filter naming the old slug stops
@@ -638,7 +659,9 @@ def update_tag(request: HttpRequest, slug: str, payload: UpdateTagBody) -> dict[
     tag's text is allowed and yields a ``-2`` suffix: two tags may legitimately read the
     same, and the slug is what tells them apart.
     """
-    return {"data": serialize_tag(get_service_caller().update_tag(slug, payload.text))}
+    return DataResponse[ManagedTemplateTagOut](
+        data=serialize_tag(get_service_caller().update_tag(slug, payload.text))
+    )
 
 
 @api.delete(
@@ -661,13 +684,15 @@ def delete_tag(request: HttpRequest, slug: str) -> Status:
     response={200: DataResponse[ManagedTemplateTagOut], **WRITE_ERRORS},
     tags=["tags"],
 )
-def archive_tag(request: HttpRequest, slug: str) -> dict[str, Any]:
+def archive_tag(request: HttpRequest, slug: str) -> DataResponse[ManagedTemplateTagOut]:
     """Retire a tag from the pickers without touching the templates carrying it.
 
     Filtering by an archived tag still returns those templates -- archiving hides the tag
     from ``?status=active``, it does not hide the templates.
     """
-    return {"data": serialize_tag(_set_tag_status(slug, ManagedTemplateTagStatus.ARCHIVED))}
+    return DataResponse[ManagedTemplateTagOut](
+        data=serialize_tag(_set_tag_status(slug, ManagedTemplateTagStatus.ARCHIVED))
+    )
 
 
 @api.post(
@@ -675,14 +700,16 @@ def archive_tag(request: HttpRequest, slug: str) -> dict[str, Any]:
     response={200: DataResponse[ManagedTemplateTagOut], **WRITE_ERRORS},
     tags=["tags"],
 )
-def restore_tag(request: HttpRequest, slug: str) -> dict[str, Any]:
+def restore_tag(request: HttpRequest, slug: str) -> DataResponse[ManagedTemplateTagOut]:
     """Put an archived tag back on offer.
 
     Unlike an archived template version -- terminal, because reviving one would rewrite what
     its audit trail says happened -- a tag carries no history to contradict, so archiving one
     is reversible.
     """
-    return {"data": serialize_tag(_set_tag_status(slug, ManagedTemplateTagStatus.ACTIVE))}
+    return DataResponse[ManagedTemplateTagOut](
+        data=serialize_tag(_set_tag_status(slug, ManagedTemplateTagStatus.ACTIVE))
+    )
 
 
 # Registered last: `/templates/{key}` would otherwise be a candidate for paths the routes
@@ -694,7 +721,9 @@ def restore_tag(request: HttpRequest, slug: str) -> dict[str, Any]:
     response={200: DataResponse[ManagedTemplateOut], **LOOKUP_ERRORS},
     tags=["templates"],
 )
-def get_template(request: HttpRequest, key: str, query: Query[VersionQuery]) -> dict[str, Any]:
+def get_template(
+    request: HttpRequest, key: str, query: Query[VersionQuery]
+) -> DataResponse[ManagedTemplateOut]:
     """One version of a template. Omitting ``version`` returns the latest."""
     service = get_service_caller()
     return _data(service, service.get_template(key, query.version))

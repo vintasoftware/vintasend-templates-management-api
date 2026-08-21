@@ -24,10 +24,12 @@ seeing what a given context produces.
 
 import datetime
 import uuid
-from typing import Any, cast
+from typing import cast
 
+from pydantic import JsonValue
 from vintasend.constants import NotificationStatus, NotificationTypes
 from vintasend.services.dataclasses import Notification, NotificationContextDict
+from vintasend.services.notification_template_renderers.base import NotificationSendInput
 from vintasend_managed_templates.dataclasses import ManagedTemplate
 
 from .contract import TemplatePreviewOut
@@ -66,7 +68,7 @@ def build_preview_notification(template: ManagedTemplate) -> Notification:
 
 
 def build_template_preview(
-    service: ServiceCaller, template: ManagedTemplate, context: dict[str, Any]
+    service: ServiceCaller, template: ManagedTemplate, context: dict[str, JsonValue]
 ) -> TemplatePreviewOut:
     """Render ``template`` with ``context`` and shape the result for the wire.
 
@@ -111,7 +113,7 @@ def build_template_preview(
     )
 
 
-def _as_context(context: dict[str, Any]) -> NotificationContextDict:
+def _as_context(context: dict[str, JsonValue]) -> NotificationContextDict:
     """Hand the request's JSON object to the renderer as the context, unchanged.
 
     The seam types a context as ``NotificationContextDict``, but building one here would
@@ -134,6 +136,12 @@ def _as_context(context: dict[str, Any]) -> NotificationContextDict:
     return cast("NotificationContextDict", context)
 
 
-def _optional_str(rendered: Any, attribute: str) -> str | None:
+def _optional_str(rendered: NotificationSendInput, attribute: str) -> str | None:
+    """Read an optional rendered field off send input that may not define it.
+
+    ``NotificationSendInput`` is a bare marker class -- ``TemplatedEmail`` carries a subject
+    and preheader, ``TemplatedSMS`` carries neither -- so which attributes exist depends on
+    the renderer the deployment configured. getattr is the honest way to ask.
+    """
     value = getattr(rendered, attribute, None)
     return value if isinstance(value, str) else None

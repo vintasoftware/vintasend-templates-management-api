@@ -4,8 +4,6 @@
 ``/api/v1`` and requires the bearer token.
 """
 
-from typing import Any
-
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.urls import path
 
@@ -18,7 +16,7 @@ urlpatterns = [
 ]
 
 
-def envelope_404(request: HttpRequest, exception: Any = None) -> HttpResponse:
+def envelope_404(request: HttpRequest, exception: Exception | None = None) -> HttpResponse:
     """Serve unmatched paths in the contract's error envelope.
 
     Paths under ``/api/v1`` are handled by Ninja's own 404 handler, which already uses

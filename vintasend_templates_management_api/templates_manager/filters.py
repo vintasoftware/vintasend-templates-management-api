@@ -19,11 +19,14 @@ Everything a client sees is camelCase either way.
 
 import datetime
 from collections.abc import Sequence
-from typing import Any, cast
+from typing import cast
 
 from vintasend_managed_templates.constants import ManagedTemplateStatus
 from vintasend_managed_templates.filters import (
+    DateRange,
+    FilterLookup,
     ManagedTemplateFilterFields,
+    ManagedTemplateStatusFilter,
     StringFieldFilter,
     StringFilterLookup,
 )
@@ -80,10 +83,10 @@ def build_string_filter(value: str, capabilities: dict[str, bool]) -> StringFiel
     return value
 
 
-def _date_range(
-    start: datetime.datetime | None, end: datetime.datetime | None
-) -> dict[str, datetime.datetime]:
-    date_range: dict[str, datetime.datetime] = {}
+def _date_range(start: datetime.datetime | None, end: datetime.datetime | None) -> DateRange:
+    # `DateRange` is `total=False`, so it can be started empty and filled in -- unlike the
+    # filter TypedDict in `cast_filter`, this one needs no cast.
+    date_range: DateRange = {}
     if start is not None:
         date_range["from"] = start
     if end is not None:
@@ -91,7 +94,7 @@ def _date_range(
     return date_range
 
 
-def build_status_filter(statuses: Sequence[str]) -> Any:
+def build_status_filter(statuses: Sequence[str]) -> ManagedTemplateStatusFilter:
     """One status becomes an exact match; several become an ``in`` lookup.
 
     A bare enum member is the filter vocabulary's exact match, so the single-status case
@@ -110,7 +113,7 @@ def build_backend_filter(
 
     Filters are combined with AND, which is what a bare field filter means.
     """
-    backend_filter: dict[str, Any] = {}
+    backend_filter: dict[str, FilterLookup] = {}
 
     for wire_name, (capability, field_name) in STRING_FIELDS.items():
         value = getattr(query, wire_name)
@@ -157,10 +160,14 @@ def build_backend_filter(
     return cast_filter(backend_filter)
 
 
-def cast_filter(raw: dict[str, Any]) -> ManagedTemplateFilterFields:
+def cast_filter(raw: dict[str, FilterLookup]) -> ManagedTemplateFilterFields:
     """Narrow a dict built key by key to the filter TypedDict.
 
-    ``ManagedTemplateFilterFields`` is a ``total=False`` TypedDict, so it cannot be built
-    incrementally under ``mypy`` without this one cast.
+    The one unavoidable cast in this module. ``ManagedTemplateFilterFields`` is a
+    ``total=False`` TypedDict whose keys are decided by which query parameters were sent,
+    and a TypedDict can only be built from a literal -- so a filter assembled conditionally
+    cannot be typed as one without this. The input is ``dict[str, FilterLookup]`` rather
+    than ``dict[str, Any]``, so every value going in is still checked against the union of
+    lookup shapes the vocabulary allows; only the key-to-value pairing is asserted here.
     """
     return cast("ManagedTemplateFilterFields", raw)

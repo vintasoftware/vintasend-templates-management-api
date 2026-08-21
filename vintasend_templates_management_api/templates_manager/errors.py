@@ -5,7 +5,7 @@ Rendering an ``ApiError`` into the response envelope is deliberately not done he
 on the wire, and validation and auth failures go through the same code as raised errors.
 """
 
-from typing import Any
+from pydantic import JsonValue
 
 from .contract import ApiErrorCode
 
@@ -32,7 +32,7 @@ class ApiError(Exception):
     """Error carrying an API error code, turned into the documented status code and
     error envelope by the handler registered in ``api.py``."""
 
-    def __init__(self, code: ApiErrorCode, message: str, details: Any | None = None) -> None:
+    def __init__(self, code: ApiErrorCode, message: str, details: JsonValue | None = None) -> None:
         super().__init__(message)
         self.code: ApiErrorCode = code
         self.message = message
@@ -40,7 +40,7 @@ class ApiError(Exception):
         self.details = details
 
     @classmethod
-    def bad_request(cls, message: str, details: Any | None = None) -> "ApiError":
+    def bad_request(cls, message: str, details: JsonValue | None = None) -> "ApiError":
         return cls("BAD_REQUEST", message, details)
 
     @classmethod

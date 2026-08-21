@@ -1,16 +1,16 @@
 """Listing, reading, creating, versioning and deleting templates."""
 
 import datetime
-from typing import Any, Callable
 
 import pytest
 from vintasend_managed_templates.constants import ManagedTemplateStatus
 
+from .conftest import ReadRequest, WriteRequest
 from .fakes import FIXED_NOW, InMemoryTemplateManagerBackend
 
 
 def test_lists_templates_with_the_pagination_envelope(
-    get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    get: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(key="welcome-email")
     backend.add(key="password-reset")
@@ -26,7 +26,7 @@ def test_lists_templates_with_the_pagination_envelope(
 
 
 def test_reports_has_more_when_a_page_comes_back_full(
-    get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    get: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     """The seam has no count method, so a full page is the only signal another may exist."""
     backend.add(key="a")
@@ -37,9 +37,7 @@ def test_reports_has_more_when_a_page_comes_back_full(
     assert response.json()["hasMore"] is True
 
 
-def test_pages_are_one_indexed(
-    get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
-) -> None:
+def test_pages_are_one_indexed(get: ReadRequest, backend: InMemoryTemplateManagerBackend) -> None:
     """Page 1 is the first page on the wire and in the service, with no conversion between."""
     backend.add(key="a")
     backend.add(key="b")
@@ -52,7 +50,7 @@ def test_pages_are_one_indexed(
 
 
 def test_serializes_every_contract_field(
-    get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    get: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(
         key="welcome-email",
@@ -90,7 +88,7 @@ def test_serializes_every_contract_field(
 
 
 def test_absent_optional_fields_are_null_not_missing(
-    get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    get: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(subject_template=None, preheader_template=None, tenant=None)
 
@@ -105,7 +103,7 @@ def test_absent_optional_fields_are_null_not_missing(
 
 
 def test_filters_by_key_case_insensitively(
-    get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    get: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(key="welcome-email")
     backend.add(key="password-reset")
@@ -116,7 +114,7 @@ def test_filters_by_key_case_insensitively(
 
 
 def test_filters_by_a_single_status(
-    get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    get: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(key="draft-one", status=ManagedTemplateStatus.DRAFT)
     backend.add(key="active-one", status=ManagedTemplateStatus.ACTIVE)
@@ -127,7 +125,7 @@ def test_filters_by_a_single_status(
 
 
 def test_filters_by_several_statuses_at_once(
-    get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    get: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(key="draft-one", status=ManagedTemplateStatus.DRAFT)
     backend.add(key="active-one", status=ManagedTemplateStatus.ACTIVE)
@@ -138,9 +136,7 @@ def test_filters_by_several_statuses_at_once(
     assert [row["key"] for row in response.json()["data"]] == ["draft-one", "active-one"]
 
 
-def test_filters_by_version(
-    get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
-) -> None:
+def test_filters_by_version(get: ReadRequest, backend: InMemoryTemplateManagerBackend) -> None:
     backend.add(key="welcome-email", version=1)
     backend.add(key="welcome-email", version=2)
 
@@ -150,7 +146,7 @@ def test_filters_by_version(
 
 
 def test_filters_by_created_range(
-    get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    get: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(key="old", created=FIXED_NOW - datetime.timedelta(days=10))
     backend.add(key="new", created=FIXED_NOW)
@@ -161,7 +157,7 @@ def test_filters_by_created_range(
 
 
 def test_combines_filters_with_and(
-    get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    get: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(key="welcome-email", status=ManagedTemplateStatus.DRAFT)
     backend.add(key="welcome-email", version=2, status=ManagedTemplateStatus.ACTIVE)
@@ -173,7 +169,7 @@ def test_combines_filters_with_and(
 
 
 def test_lists_only_the_current_version_of_each_key_by_default(
-    get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    get: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(key="welcome-email", version=1, status=ManagedTemplateStatus.INACTIVE)
     backend.add(key="welcome-email", version=2, status=ManagedTemplateStatus.ACTIVE)
@@ -188,7 +184,7 @@ def test_lists_only_the_current_version_of_each_key_by_default(
 
 
 def test_a_key_with_no_active_or_draft_version_is_not_listed_by_default(
-    get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    get: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(key="retired", version=1, status=ManagedTemplateStatus.ARCHIVED)
     backend.add(key="live", version=1, status=ManagedTemplateStatus.ACTIVE)
@@ -199,7 +195,7 @@ def test_a_key_with_no_active_or_draft_version_is_not_listed_by_default(
 
 
 def test_most_recent_active_version_false_lists_every_version(
-    get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    get: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     """`false` lifts the default rather than asking for the rows it hides."""
     backend.add(key="welcome-email", version=1, status=ManagedTemplateStatus.INACTIVE)
@@ -211,7 +207,7 @@ def test_most_recent_active_version_false_lists_every_version(
 
 
 def test_the_default_combines_with_the_other_filters(
-    get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    get: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(key="welcome-email", version=1, status=ManagedTemplateStatus.ACTIVE)
     backend.add(key="welcome-email", version=2, status=ManagedTemplateStatus.ARCHIVED)
@@ -222,11 +218,11 @@ def test_the_default_combines_with_the_other_filters(
     assert len(get("/api/v1/templates?status=active").json()["data"]) == 1
 
 
-def test_rejects_a_non_boolean_most_recent_active_version(get: Callable[..., Any]) -> None:
+def test_rejects_a_non_boolean_most_recent_active_version(get: ReadRequest) -> None:
     assert get("/api/v1/templates?mostRecentActiveVersion=maybe").status_code == 400
 
 
-def test_rejects_a_blank_filter_value(get: Callable[..., Any]) -> None:
+def test_rejects_a_blank_filter_value(get: ReadRequest) -> None:
     """A parameter present but blank is a client bug, not a filter matching everything."""
     response = get("/api/v1/templates?key=%20%20")
 
@@ -236,7 +232,7 @@ def test_rejects_a_blank_filter_value(get: Callable[..., Any]) -> None:
     assert body["details"]["issues"][0]["path"] == "key"
 
 
-def test_rejects_an_unknown_status(get: Callable[..., Any]) -> None:
+def test_rejects_an_unknown_status(get: ReadRequest) -> None:
     response = get("/api/v1/templates?status=published")
 
     assert response.status_code == 400
@@ -244,7 +240,7 @@ def test_rejects_an_unknown_status(get: Callable[..., Any]) -> None:
 
 
 @pytest.mark.parametrize("query", ["page=0", "pageSize=0", "pageSize=101"])
-def test_rejects_out_of_range_pagination(get: Callable[..., Any], query: str) -> None:
+def test_rejects_out_of_range_pagination(get: ReadRequest, query: str) -> None:
     response = get(f"/api/v1/templates?{query}")
 
     assert response.status_code == 400
@@ -255,7 +251,7 @@ def test_rejects_out_of_range_pagination(get: Callable[..., Any], query: str) ->
 
 
 def test_reads_the_latest_version_by_default(
-    get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    get: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(key="welcome-email", version=1, name="v1")
     backend.add(key="welcome-email", version=2, name="v2")
@@ -266,9 +262,7 @@ def test_reads_the_latest_version_by_default(
     assert response.json()["data"]["name"] == "v2"
 
 
-def test_reads_a_pinned_version(
-    get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
-) -> None:
+def test_reads_a_pinned_version(get: ReadRequest, backend: InMemoryTemplateManagerBackend) -> None:
     backend.add(key="welcome-email", version=1, name="v1")
     backend.add(key="welcome-email", version=2, name="v2")
 
@@ -276,7 +270,7 @@ def test_reads_a_pinned_version(
     assert get("/api/v1/templates/welcome-email/versions/1").json()["data"]["name"] == "v1"
 
 
-def test_reading_an_unknown_key_is_a_404(get: Callable[..., Any]) -> None:
+def test_reading_an_unknown_key_is_a_404(get: ReadRequest) -> None:
     response = get("/api/v1/templates/nope")
 
     assert response.status_code == 404
@@ -286,7 +280,7 @@ def test_reading_an_unknown_key_is_a_404(get: Callable[..., Any]) -> None:
 
 
 def test_reading_an_unknown_version_is_a_404(
-    get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    get: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(key="welcome-email", version=1)
 
@@ -300,7 +294,7 @@ def test_reading_an_unknown_version_is_a_404(
 
 
 def test_lists_versions_newest_first(
-    get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    get: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(key="welcome-email", version=1)
     backend.add(key="welcome-email", version=3)
@@ -312,7 +306,7 @@ def test_lists_versions_newest_first(
     assert [row["version"] for row in response.json()["data"]] == [3, 2, 1]
 
 
-def test_listing_versions_of_an_unknown_key_is_a_404(get: Callable[..., Any]) -> None:
+def test_listing_versions_of_an_unknown_key_is_a_404(get: ReadRequest) -> None:
     """The service filters rather than raising here, so an empty result is the miss."""
     response = get("/api/v1/templates/nope/versions")
 
@@ -324,7 +318,7 @@ def test_listing_versions_of_an_unknown_key_is_a_404(get: Callable[..., Any]) ->
 
 
 def test_creates_a_first_version(
-    post: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    post: WriteRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     response = post(
         "/api/v1/templates",
@@ -349,7 +343,7 @@ def test_creates_a_first_version(
 
 
 @pytest.mark.parametrize("missing", ["key", "name", "templateManagedBackend", "bodyTemplate"])
-def test_rejects_a_create_missing_a_required_field(post: Callable[..., Any], missing: str) -> None:
+def test_rejects_a_create_missing_a_required_field(post: WriteRequest, missing: str) -> None:
     body = {
         "key": "welcome-email",
         "name": "Welcome",
@@ -364,7 +358,7 @@ def test_rejects_a_create_missing_a_required_field(post: Callable[..., Any], mis
     assert response.json()["error"]["details"]["issues"][0]["path"] == missing
 
 
-def test_rejects_an_empty_body_template(post: Callable[..., Any]) -> None:
+def test_rejects_an_empty_body_template(post: WriteRequest) -> None:
     response = post(
         "/api/v1/templates",
         {
@@ -382,7 +376,7 @@ def test_rejects_an_empty_body_template(post: Callable[..., Any]) -> None:
 
 
 def test_creates_a_new_version_from_the_latest(
-    post: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    post: WriteRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(key="welcome-email", version=1, name="v1", body_template="<p>old</p>")
 
@@ -397,7 +391,7 @@ def test_creates_a_new_version_from_the_latest(
 
 
 def test_a_new_version_never_touches_the_one_it_came_from(
-    post: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    post: WriteRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     """Templates are versioned rather than edited, which is the point of the POST."""
     original = backend.add(key="welcome-email", version=1, body_template="<p>old</p>")
@@ -407,7 +401,7 @@ def test_a_new_version_never_touches_the_one_it_came_from(
     assert original.body_template == "<p>old</p>"
 
 
-def test_versioning_an_unknown_key_is_a_404(post: Callable[..., Any]) -> None:
+def test_versioning_an_unknown_key_is_a_404(post: WriteRequest) -> None:
     response = post("/api/v1/templates/nope/versions", {"name": "x"})
 
     assert response.status_code == 404
@@ -417,7 +411,7 @@ def test_versioning_an_unknown_key_is_a_404(post: Callable[..., Any]) -> None:
 
 
 def test_deletes_the_latest_version_by_default(
-    delete: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    delete: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(key="welcome-email", version=1)
     backend.add(key="welcome-email", version=2)
@@ -429,7 +423,7 @@ def test_deletes_the_latest_version_by_default(
 
 
 def test_deletes_a_pinned_version(
-    delete: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    delete: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(key="welcome-email", version=1)
     backend.add(key="welcome-email", version=2)
@@ -441,7 +435,7 @@ def test_deletes_a_pinned_version(
 
 
 def test_deleting_an_unknown_version_is_a_404(
-    delete: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    delete: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(key="welcome-email", version=1)
 

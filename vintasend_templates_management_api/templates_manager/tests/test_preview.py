@@ -1,10 +1,11 @@
 """Rendering a template version against a supplied context."""
 
-from typing import Any, Callable
+from collections.abc import Callable
 
 from vintasend_managed_templates.constants import ManagedTemplateStatus
 from vintasend_managed_templates.managed_template_service import ManagedTemplateService
 
+from .conftest import WriteRequest
 from .fakes import (
     BodylessRenderer,
     FakeEmailRenderer,
@@ -14,7 +15,7 @@ from .fakes import (
 
 
 def test_renders_the_latest_version(
-    post: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    post: WriteRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(
         key="welcome-email",
@@ -35,7 +36,7 @@ def test_renders_the_latest_version(
 
 
 def test_renders_a_pinned_version(
-    post: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    post: WriteRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(key="welcome-email", version=1, body_template="old")
     backend.add(key="welcome-email", version=2, body_template="new")
@@ -47,7 +48,7 @@ def test_renders_a_pinned_version(
 
 
 def test_previews_an_unpublished_draft(
-    post: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    post: WriteRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     """The reason this endpoint pins a version: a draft is reviewable before activation."""
     backend.add(
@@ -64,7 +65,7 @@ def test_previews_an_unpublished_draft(
 
 
 def test_renders_a_preheader_when_the_template_has_one(
-    post: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    post: WriteRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(key="welcome-email", preheader_template="Hi {{ name }}")
 
@@ -76,7 +77,7 @@ def test_renders_a_preheader_when_the_template_has_one(
 
 
 def test_a_body_only_renderer_reports_no_subject(
-    post: Callable[..., Any],
+    post: WriteRequest,
     backend: InMemoryTemplateManagerBackend,
     install_service: Callable[..., ManagedTemplateService],
 ) -> None:
@@ -92,7 +93,7 @@ def test_a_body_only_renderer_reports_no_subject(
 
 
 def test_an_empty_context_is_accepted(
-    post: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    post: WriteRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(key="welcome-email", body_template="static body")
 
@@ -103,7 +104,7 @@ def test_an_empty_context_is_accepted(
 
 
 def test_a_broken_template_is_reported_as_preview_unavailable(
-    post: Callable[..., Any],
+    post: WriteRequest,
     backend: InMemoryTemplateManagerBackend,
     install_service: Callable[..., ManagedTemplateService],
 ) -> None:
@@ -120,7 +121,7 @@ def test_a_broken_template_is_reported_as_preview_unavailable(
 
 
 def test_a_renderer_with_no_text_body_is_reported_rather_than_shown_empty(
-    post: Callable[..., Any],
+    post: WriteRequest,
     backend: InMemoryTemplateManagerBackend,
     install_service: Callable[..., ManagedTemplateService],
 ) -> None:
@@ -134,7 +135,7 @@ def test_a_renderer_with_no_text_body_is_reported_rather_than_shown_empty(
 
 
 def test_renders_a_nested_context(
-    post: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    post: WriteRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     """A nested object is an entirely ordinary context and must survive the round trip.
 
@@ -152,7 +153,7 @@ def test_renders_a_nested_context(
 
 
 def test_renders_context_values_the_seam_type_would_reject(
-    post: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    post: WriteRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     """``None`` values and lists of strings both appear in stored contexts.
 
@@ -169,12 +170,12 @@ def test_renders_context_values_the_seam_type_would_reject(
     assert response.json()["data"]["renderedBody"] == "<p>Ana</p>"
 
 
-def test_previewing_an_unknown_key_is_a_404(post: Callable[..., Any]) -> None:
+def test_previewing_an_unknown_key_is_a_404(post: WriteRequest) -> None:
     assert post("/api/v1/templates/nope/preview").status_code == 404
 
 
 def test_previewing_an_unknown_version_is_a_404(
-    post: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    post: WriteRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(key="welcome-email", version=1)
 
@@ -182,7 +183,7 @@ def test_previewing_an_unknown_version_is_a_404(
 
 
 def test_the_preview_reads_the_pinned_version_not_the_renderers_own_lookup(
-    post: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    post: WriteRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     """`ManagedTemplateRenderer.render` would resolve the key to the latest version.
 

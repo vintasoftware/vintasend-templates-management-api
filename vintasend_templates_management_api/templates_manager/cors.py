@@ -52,8 +52,10 @@ class CorsMiddleware:
         if not request.path.startswith(API_BASE_PATH):
             return None
 
-        origin = request.META.get("HTTP_ORIGIN")
-        if origin and origin in settings.VINTASEND_API_CORS_ORIGINS:
+        # `META` is a plain dict of unknown value types, so the header is narrowed to `str`
+        # before it can be echoed into a response header.
+        origin: str | None = request.META.get("HTTP_ORIGIN")
+        if isinstance(origin, str) and origin in settings.VINTASEND_API_CORS_ORIGINS:
             return origin
 
         return None

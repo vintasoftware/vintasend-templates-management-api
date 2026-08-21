@@ -1470,7 +1470,32 @@ components:
       - data
       title: DataResponse[dict[str, bool]]
       type: object
-    ApiErrorBody: {}
+    ApiErrorBody:
+      properties:
+        code:
+          enum:
+          - BAD_REQUEST
+          - UNAUTHORIZED
+          - NOT_FOUND
+          - CONFLICT
+          - INVALID_STATUS_TRANSITION
+          - PREVIEW_UNAVAILABLE
+          - TEMPLATE_COMPOSITION_ERROR
+          - INTERNAL_ERROR
+          title: Code
+          type: string
+        message:
+          title: Message
+          type: string
+        details:
+          anyOf:
+          - $ref: '#/components/schemas/JsonValue'
+          - type: 'null'
+      required:
+      - code
+      - message
+      title: ApiErrorBody
+      type: object
     ApiErrorResponse:
       description: Error envelope returned with every non-2xx response.
       properties:
@@ -1480,6 +1505,7 @@ components:
       - error
       title: ApiErrorResponse
       type: object
+    JsonValue: {}
     TemplateListQuery:
       description: 'Filters accepted by ``GET /api/v1/templates``.
 

@@ -69,6 +69,10 @@ class Command(BaseCommand):
         self.stdout.write(f"Wrote {target}")
 
 
+# `Any` throughout this module, deliberately. An OpenAPI document is a deeply nested,
+# heterogeneous JSON tree that this code merges and indexes into by key; describing it as
+# `JsonValue` would be accurate but would mean narrowing at every access, trading one
+# `Any` for a dozen casts. `handle`'s signature is Django's, not ours.
 def build_schema() -> dict[str, Any]:
     """The full contract as one OpenAPI document.
 

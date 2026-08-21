@@ -16,11 +16,11 @@ for this module in ``pyproject.toml`` for that reason.
 All timestamps are ISO-8601 strings in UTC, and are ``null`` when unset -- never absent.
 """
 
-from typing import Any, Generic, Literal, TypeVar
+from typing import Generic, Literal, TypeVar
 
 from ninja import Schema
 
-from pydantic import SerializerFunctionWrapHandler, model_serializer
+from pydantic import JsonValue
 
 
 API_VERSION = "v1"
@@ -224,15 +224,22 @@ class HealthOut(Schema):
 class ApiErrorBody(Schema):
     code: ApiErrorCode
     message: str
-    # Optional machine-readable context, such as field issues.
-    details: Any | None = None
-
-    @model_serializer(mode="wrap")
-    def _drop_absent_details(self, handler: SerializerFunctionWrapHandler) -> Any:
-        serialized = handler(self)
-        if serialized.get("details") is None:
-            serialized.pop("details", None)
-        return serialized
+    # Optional machine-readable context, such as field issues. `JsonValue` rather than
+    # `Any`: the payload really can be any shape, but it has to survive a JSON round trip,
+    # and typing it says so.
+    #
+    # Absent rather than null when there is nothing to report. That is enforced where the
+    # body is actually built -- `api._envelope` adds the key only when it has a value --
+    # not here: this class is never instantiated. Error responses are `JsonResponse`s
+    # written by the exception handlers, so `ApiErrorBody` exists purely to describe them
+    # in the generated schema.
+    #
+    # It used to carry a `model_serializer` that dropped a null `details`. That never ran
+    # for the same reason, and it had one real effect: pydantic builds a serialization
+    # schema from a wrap serializer's return type, so the whole error body was published
+    # as an empty schema and clients reading `openapi.yaml` saw no `code` or `message` at
+    # all. Describing the envelope is this class's only job, so the serializer had to go.
+    details: JsonValue | None = None
 
 
 class ApiErrorResponse(Schema):

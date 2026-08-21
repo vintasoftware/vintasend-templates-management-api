@@ -1,11 +1,12 @@
 """The status lifecycle: transitions, their audit trail, and what a client is told."""
 
-from typing import Any, Callable
+from collections.abc import Callable
 
 import pytest
 from vintasend_managed_templates.constants import ManagedTemplateStatus
 from vintasend_managed_templates.managed_template_service import ManagedTemplateService
 
+from .conftest import ReadRequest, WriteRequest
 from .fakes import InMemoryTemplateManagerBackend
 
 
@@ -17,7 +18,7 @@ ACTIONS = {
 
 
 def test_activates_the_latest_version(
-    post: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    post: WriteRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(key="welcome-email", version=1)
     backend.add(key="welcome-email", version=2)
@@ -31,7 +32,7 @@ def test_activates_the_latest_version(
 
 
 def test_activates_a_pinned_version(
-    post: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    post: WriteRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     first = backend.add(key="welcome-email", version=1)
     second = backend.add(key="welcome-email", version=2)
@@ -43,7 +44,7 @@ def test_activates_a_pinned_version(
 
 
 def test_activating_leaves_other_active_versions_alone(
-    post: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    post: WriteRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     """A key may hold several active versions at once; picking between them is the host's."""
     first = backend.add(key="welcome-email", version=1, status=ManagedTemplateStatus.ACTIVE)
@@ -55,7 +56,7 @@ def test_activating_leaves_other_active_versions_alone(
 
 
 def test_deactivating_allows_activating_again(
-    post: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    post: WriteRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(key="welcome-email", status=ManagedTemplateStatus.ACTIVE)
 
@@ -64,7 +65,7 @@ def test_deactivating_allows_activating_again(
 
 
 def test_sets_an_explicitly_named_status(
-    post: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    post: WriteRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(key="welcome-email")
 
@@ -73,7 +74,7 @@ def test_sets_an_explicitly_named_status(
     assert response.json()["data"]["status"] == "active"
 
 
-def test_rejects_an_unknown_status(post: Callable[..., Any]) -> None:
+def test_rejects_an_unknown_status(post: WriteRequest) -> None:
     response = post("/api/v1/templates/welcome-email/status", {"status": "published"})
 
     assert response.status_code == 400
@@ -84,7 +85,7 @@ def test_rejects_an_unknown_status(post: Callable[..., Any]) -> None:
 
 
 def test_a_disallowed_move_is_a_409_naming_the_code(
-    post: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    post: WriteRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     """Archived is terminal under the default lifecycle."""
     backend.add(key="welcome-email", status=ManagedTemplateStatus.ARCHIVED)
@@ -96,7 +97,7 @@ def test_a_disallowed_move_is_a_409_naming_the_code(
 
 
 def test_a_draft_cannot_be_deactivated(
-    post: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    post: WriteRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(key="welcome-email", status=ManagedTemplateStatus.DRAFT)
 
@@ -106,7 +107,7 @@ def test_a_draft_cannot_be_deactivated(
 
 
 def test_setting_the_status_a_version_already_holds_is_a_no_op(
-    post: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    post: WriteRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     """Repeating a call must not fill the audit trail with entries recording nothing."""
     backend.add(key="welcome-email", status=ManagedTemplateStatus.ACTIVE)
@@ -119,12 +120,12 @@ def test_setting_the_status_a_version_already_holds_is_a_no_op(
 
 
 @pytest.mark.parametrize("action", sorted(ACTIONS))
-def test_a_status_change_on_an_unknown_key_is_a_404(post: Callable[..., Any], action: str) -> None:
+def test_a_status_change_on_an_unknown_key_is_a_404(post: WriteRequest, action: str) -> None:
     assert post(f"/api/v1/templates/nope/{action}").status_code == 404
 
 
 def test_a_status_change_on_an_unknown_version_is_a_404(
-    post: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    post: WriteRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(key="welcome-email", version=1)
 
@@ -132,7 +133,7 @@ def test_a_status_change_on_an_unknown_version_is_a_404(
 
 
 def test_a_service_with_validation_off_allows_any_move(
-    post: Callable[..., Any],
+    post: WriteRequest,
     backend: InMemoryTemplateManagerBackend,
     install_service: Callable[..., ManagedTemplateService],
 ) -> None:
@@ -159,7 +160,7 @@ def test_a_service_with_validation_off_allows_any_move(
     ],
 )
 def test_reports_which_moves_will_work(
-    get: Callable[..., Any],
+    get: ReadRequest,
     backend: InMemoryTemplateManagerBackend,
     status: ManagedTemplateStatus,
     expected: list[str],
@@ -172,7 +173,7 @@ def test_reports_which_moves_will_work(
 
 
 def test_the_current_status_is_never_offered_as_a_transition(
-    get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    get: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     """Setting a version to the status it holds is a documented no-op, not an action."""
     backend.add(key="welcome-email", status=ManagedTemplateStatus.ACTIVE)
@@ -183,7 +184,7 @@ def test_the_current_status_is_never_offered_as_a_transition(
 
 
 def test_reports_every_move_when_validation_is_off(
-    get: Callable[..., Any],
+    get: ReadRequest,
     backend: InMemoryTemplateManagerBackend,
     install_service: Callable[..., ManagedTemplateService],
 ) -> None:
@@ -199,7 +200,7 @@ def test_reports_every_move_when_validation_is_off(
 
 
 def test_records_a_status_change_in_the_audit_trail(
-    post: Callable[..., Any], get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    post: WriteRequest, get: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(key="welcome-email")
 
@@ -219,7 +220,7 @@ def test_records_a_status_change_in_the_audit_trail(
 
 
 def test_attribution_is_optional(
-    post: Callable[..., Any], get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    post: WriteRequest, get: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     """The service requires no attribution, and this API adds no policy of its own."""
     backend.add(key="welcome-email")
@@ -232,7 +233,7 @@ def test_attribution_is_optional(
 
 
 def test_history_is_most_recent_first(
-    post: Callable[..., Any], get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    post: WriteRequest, get: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(key="welcome-email")
 
@@ -246,7 +247,7 @@ def test_history_is_most_recent_first(
 
 
 def test_history_can_be_narrowed_to_one_version(
-    post: Callable[..., Any], get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    post: WriteRequest, get: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.add(key="welcome-email", version=1)
     backend.add(key="welcome-email", version=2)
@@ -259,7 +260,7 @@ def test_history_can_be_narrowed_to_one_version(
 
 
 def test_omitting_version_asks_for_every_version(
-    post: Callable[..., Any], get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    post: WriteRequest, get: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     """The one place `version=None` does not mean "the latest"."""
     backend.add(key="welcome-email", version=1)
@@ -272,5 +273,5 @@ def test_omitting_version_asks_for_every_version(
     assert sorted(record["version"] for record in history) == [1, 2]
 
 
-def test_history_for_an_unknown_key_is_a_404(get: Callable[..., Any]) -> None:
+def test_history_for_an_unknown_key_is_a_404(get: ReadRequest) -> None:
     assert get("/api/v1/templates/nope/status-history").status_code == 404

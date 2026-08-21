@@ -15,9 +15,12 @@ import dataclasses
 import datetime
 import itertools
 from collections.abc import Iterable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from vintasend.services.notification_template_renderers.base import TemplateContent
+from vintasend.services.notification_template_renderers.base import (
+    NotificationSendInput,
+    TemplateContent,
+)
 from vintasend.services.notification_template_renderers.base_templated_email_renderer import (
     EmailTemplateContent,
     TemplatedEmail,
@@ -53,6 +56,14 @@ from vintasend_managed_templates.managed_template_renderer import ManagedTemplat
 from vintasend_managed_templates.tags import next_available_slug, slugify_tag
 
 
+if TYPE_CHECKING:
+    from vintasend.services.dataclasses import (
+        Notification,
+        NotificationContextDict,
+        OneOffNotification,
+    )
+
+
 TEST_API_KEY = "test-api-key"
 
 AUTH_HEADERS = {"Authorization": f"Bearer {TEST_API_KEY}"}
@@ -69,7 +80,7 @@ class InMemoryTemplateManagerBackend(BaseTemplateManagerBackend):
 
     # `capabilities` is typed loosely on purpose: one test reports a truthy non-boolean to
     # prove the API coerces it, which a `dict[str, bool]` would forbid at the call site.
-    def __init__(self, capabilities: dict[str, Any] | None = None) -> None:
+    def __init__(self, capabilities: dict[str, object] | None = None) -> None:
         self.templates: list[ManagedTemplate] = []
         self.history: list[ManagedTemplateStatusHistory] = []
         # slug -> tag. Templates hold references to these same objects, so a rename or a
@@ -81,10 +92,10 @@ class InMemoryTemplateManagerBackend(BaseTemplateManagerBackend):
         # only when a test asks for it -- defining the method on the class and raising
         # inside it would not model absence, since `getattr` would still find it.
         if capabilities is not None:
-            self.get_filter_capabilities = lambda: capabilities  # type: ignore[method-assign]
+            self.get_filter_capabilities = lambda: capabilities
         # Records what the service actually asked for, so a test can assert on the call and
         # not only on the response.
-        self.calls: list[tuple[str, tuple[Any, ...]]] = []
+        self.calls: list[tuple[str, tuple[object, ...]]] = []
 
     # --- versions ------------------------------------------------------------------
 
@@ -483,17 +494,17 @@ def _lookup_matches(value: Any, lookup: dict[str, Any]) -> bool:
     operator = lookup["lookup"]
 
     if operator == "in":
-        return value in wanted
+        return bool(value in wanted)
 
     if isinstance(value, str) and isinstance(wanted, str):
         if lookup.get("case_sensitive") is False:
             value, wanted = value.lower(), wanted.lower()
         if operator == "includes":
-            return wanted in value
+            return bool(wanted in value)
         if operator == "starts_with":
-            return value.startswith(wanted)
+            return bool(value.startswith(wanted))
         if operator == "ends_with":
-            return value.endswith(wanted)
+            return bool(value.endswith(wanted))
 
     if operator == "gt":
         return bool(value > wanted)
@@ -531,10 +542,10 @@ class FakeEmailRenderer(ManagedTemplateRenderer[EmailTemplateContent]):
 
     def render_from_template_content(
         self,
-        notification: Any,
+        notification: "Notification | OneOffNotification",
         template_content: EmailTemplateContent,
-        context: Any,
-        **kwargs: Any,
+        context: "NotificationContextDict",
+        **kwargs: object,
     ) -> TemplatedEmail:
         if self.raises is not None:
             raise self.raises
@@ -559,12 +570,16 @@ class FakeSMSRenderer(ManagedTemplateRenderer[TemplateContent]):
         return TemplateContent(body_template=template.body_template)
 
     def render_from_template_content(
-        self, notification: Any, template_content: TemplateContent, context: Any, **kwargs: Any
-    ) -> Any:
+        self,
+        notification: "Notification | OneOffNotification",
+        template_content: TemplateContent,
+        context: "NotificationContextDict",
+        **kwargs: object,
+    ) -> NotificationSendInput:
         return _BodyOnly(_substitute(template_content.body_template, context))
 
 
-class _BodyOnly:
+class _BodyOnly(NotificationSendInput):
     def __init__(self, body: str) -> None:
         self.body = body
 
@@ -579,12 +594,18 @@ class BodylessRenderer(ManagedTemplateRenderer[TemplateContent]):
         return TemplateContent(body_template=template.body_template)
 
     def render_from_template_content(
-        self, notification: Any, template_content: TemplateContent, context: Any, **kwargs: Any
-    ) -> Any:
-        return object()
+        self,
+        notification: "Notification | OneOffNotification",
+        template_content: TemplateContent,
+        context: "NotificationContextDict",
+        **kwargs: object,
+    ) -> NotificationSendInput:
+        # Deliberately not a `TemplatedEmail` or `TemplatedSMS`: the preview endpoint has to
+        # cope with send input that carries no text body at all.
+        return NotificationSendInput()
 
 
-def _substitute(template: str, context: Any) -> str:
+def _substitute(template: str, context: "NotificationContextDict") -> str:
     rendered = template
     for key, value in dict(context).items():
         rendered = rendered.replace("{{ " + str(key) + " }}", str(value))

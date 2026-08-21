@@ -1,10 +1,9 @@
 """Loading the operator-provided service, and the startup checks that guard it."""
 
-from typing import Any, Callable
-
+from django.conf import LazySettings
 from django.core.management import call_command
 from django.core.management.base import SystemCheckError
-from django.test import override_settings
+from django.test import Client, override_settings
 
 import pytest
 from vintasend_managed_templates.managed_template_service import ManagedTemplateService
@@ -16,6 +15,7 @@ from ..service import (
     load_template_service,
     set_service_caller,
 )
+from .conftest import ReadRequest
 from .fakes import FakeEmailRenderer, InMemoryTemplateManagerBackend
 
 
@@ -33,6 +33,15 @@ def returns_nothing() -> None:
 
 def raises_on_call() -> ManagedTemplateService:
     raise RuntimeError("the database is not reachable")
+
+
+def returns_the_wrong_type() -> object:
+    """A factory that returns something that is not a service at all.
+
+    Stands in for the realistic version of this mistake: a factory pointed at the backend,
+    or at the renderer, rather than at the service that composes them.
+    """
+    return InMemoryTemplateManagerBackend()
 
 
 NOT_CALLABLE = "a string, not a factory"
@@ -89,6 +98,10 @@ def test_loads_a_service_from_a_dotted_path() -> None:
         (f"{__name__}.NOT_CALLABLE", "is not callable"),
         (f"{__name__}.raises_on_call", "failed"),
         (f"{__name__}.returns_nothing", "did not return a service"),
+        (
+            f"{__name__}.returns_the_wrong_type",
+            "returned a InMemoryTemplateManagerBackend, not a ManagedTemplateService",
+        ),
     ],
 )
 def test_reports_why_a_factory_could_not_be_used(path: str, expected: str) -> None:
@@ -120,14 +133,14 @@ def test_a_failure_is_not_cached() -> None:
 # --- CORS ----------------------------------------------------------------------------
 
 
-def test_no_cors_headers_by_default(get: Callable[..., Any]) -> None:
+def test_no_cors_headers_by_default(get: ReadRequest) -> None:
     """Clients are expected to call this API from their own server side."""
     response = get("/api/v1/templates", headers={"Origin": "https://ui.example.com"})
 
     assert "Access-Control-Allow-Origin" not in response
 
 
-def test_echoes_only_a_configured_origin(get: Callable[..., Any], settings: Any) -> None:
+def test_echoes_only_a_configured_origin(get: ReadRequest, settings: "LazySettings") -> None:
     settings.VINTASEND_API_CORS_ORIGINS = ["https://ui.example.com"]
 
     allowed = get("/api/v1/templates", headers={"Origin": "https://ui.example.com"})
@@ -138,7 +151,7 @@ def test_echoes_only_a_configured_origin(get: Callable[..., Any], settings: Any)
     assert "Access-Control-Allow-Origin" not in other
 
 
-def test_never_echoes_a_wildcard(get: Callable[..., Any], settings: Any) -> None:
+def test_never_echoes_a_wildcard(get: ReadRequest, settings: "LazySettings") -> None:
     """Every request carries a bearer token; a wildcard would let any page spend it."""
     settings.VINTASEND_API_CORS_ORIGINS = ["https://ui.example.com"]
 
@@ -147,7 +160,7 @@ def test_never_echoes_a_wildcard(get: Callable[..., Any], settings: Any) -> None
     assert response["Access-Control-Allow-Origin"] != "*"
 
 
-def test_answers_a_preflight(client: Any, settings: Any) -> None:
+def test_answers_a_preflight(client: Client, settings: "LazySettings") -> None:
     settings.VINTASEND_API_CORS_ORIGINS = ["https://ui.example.com"]
 
     response = client.options(
@@ -162,7 +175,9 @@ def test_answers_a_preflight(client: Any, settings: Any) -> None:
     assert "POST" in response["Access-Control-Allow-Methods"]
 
 
-def test_cors_does_not_apply_outside_the_api_prefix(client: Any, settings: Any) -> None:
+def test_cors_does_not_apply_outside_the_api_prefix(
+    client: Client, settings: "LazySettings"
+) -> None:
     settings.VINTASEND_API_CORS_ORIGINS = ["https://ui.example.com"]
 
     response = client.get("/health", headers={"Origin": "https://ui.example.com"})

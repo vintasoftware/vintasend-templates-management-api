@@ -6,11 +6,14 @@ validation, filter negotiation, lifecycle rules and serialization without needin
 database or a template engine.
 """
 
-from typing import Any, Callable, Iterator
+from collections.abc import Iterator, Mapping
+from typing import TYPE_CHECKING, Callable, Protocol
 
 from django.test import Client
 
 import pytest
+from pydantic import JsonValue
+from vintasend_managed_templates.managed_template_renderer import ManagedTemplateRenderer
 from vintasend_managed_templates.managed_template_service import ManagedTemplateService
 
 from ..service import ServiceCaller, set_service_caller
@@ -22,8 +25,43 @@ from .fakes import (
 )
 
 
+if TYPE_CHECKING:
+    # What `Client.get` and friends actually return: an `HttpResponse` with `.json()`
+    # patched on for tests. django-stubs only names it privately, and naming it here is
+    # still better than widening every fixture's return type to `Any` -- the alternative
+    # loses `.status_code` and header access as well.
+    from django.conf import LazySettings
+    from django.test.client import _MonkeyPatchedWSGIResponse as TestResponse
+
+
+class ReadRequest(Protocol):
+    """A request fixture that sends no body."""
+
+    def __call__(self, path: str, headers: Mapping[str, str] | None = None) -> "TestResponse": ...
+
+
+class WriteRequest(Protocol):
+    """A request fixture that sends a JSON body.
+
+    ``body`` is ``JsonValue`` rather than a schema type on purpose: these tests post
+    malformed and partial payloads to assert the API rejects them, which a typed body
+    would make impossible to express.
+    """
+
+    # `Mapping[str, JsonValue]` alongside `JsonValue`: a plain `dict[str, str]` literal is
+    # not a `JsonValue`, because `dict` is invariant in its value type. `Mapping` is
+    # covariant, so this accepts the dict literals tests actually write while still
+    # rejecting a body that could not be serialized.
+    def __call__(
+        self,
+        path: str,
+        body: Mapping[str, JsonValue] | JsonValue | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> "TestResponse": ...
+
+
 @pytest.fixture(autouse=True)
-def api_key(settings: Any) -> None:
+def api_key(settings: "LazySettings") -> None:
     settings.VINTASEND_API_KEY = TEST_API_KEY
 
 
@@ -63,7 +101,7 @@ def install_service(
 
     def _install(
         template_backend: InMemoryTemplateManagerBackend | None = None,
-        renderer: Any = None,
+        renderer: ManagedTemplateRenderer | None = None,
         validate_status_transitions: bool = True,
     ) -> ManagedTemplateService:
         service = ManagedTemplateService(
@@ -92,65 +130,77 @@ def client() -> Client:
     return Client()
 
 
-def _with_auth(kwargs: dict[str, Any]) -> dict[str, Any]:
+def _with_auth(headers: Mapping[str, str] | None) -> dict[str, str]:
     """Add the bearer token to a request's headers without discarding the caller's.
 
     A test that passes its own ``headers`` -- an ``Origin`` for the CORS cases -- must not
     lose authentication by doing so.
     """
-    return {**kwargs, "headers": {**AUTH_HEADERS, **kwargs.get("headers", {})}}
+    return {**AUTH_HEADERS, **(headers or {})}
 
 
 @pytest.fixture
-def get(client: Client) -> Callable[..., Any]:
-    def _get(path: str, **kwargs: Any) -> Any:
-        return client.get(path, **_with_auth(kwargs))
+def get(client: Client) -> ReadRequest:
+    def _get(path: str, headers: Mapping[str, str] | None = None) -> "TestResponse":
+        return client.get(path, headers=_with_auth(headers))
 
     return _get
 
 
 @pytest.fixture
-def post(client: Client) -> Callable[..., Any]:
-    def _post(path: str, body: Any = None, **kwargs: Any) -> Any:
+def post(client: Client) -> WriteRequest:
+    def _post(
+        path: str,
+        body: Mapping[str, JsonValue] | JsonValue | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> "TestResponse":
         return client.post(
             path,
             data=body if body is not None else {},
             content_type="application/json",
-            **_with_auth(kwargs),
+            headers=_with_auth(headers),
         )
 
     return _post
 
 
 @pytest.fixture
-def delete(client: Client) -> Callable[..., Any]:
-    def _delete(path: str, **kwargs: Any) -> Any:
-        return client.delete(path, **_with_auth(kwargs))
+def delete(client: Client) -> ReadRequest:
+    def _delete(path: str, headers: Mapping[str, str] | None = None) -> "TestResponse":
+        return client.delete(path, headers=_with_auth(headers))
 
     return _delete
 
 
 @pytest.fixture
-def put(client: Client) -> Callable[..., Any]:
-    def _put(path: str, body: Any = None, **kwargs: Any) -> Any:
+def put(client: Client) -> WriteRequest:
+    def _put(
+        path: str,
+        body: Mapping[str, JsonValue] | JsonValue | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> "TestResponse":
         return client.put(
             path,
             data=body if body is not None else {},
             content_type="application/json",
-            **_with_auth(kwargs),
+            headers=_with_auth(headers),
         )
 
     return _put
 
 
 @pytest.fixture
-def patch(client: Client) -> Callable[..., Any]:
-    def _patch(path: str, body: Any = None, **kwargs: Any) -> Any:
+def patch(client: Client) -> WriteRequest:
+    def _patch(
+        path: str,
+        body: Mapping[str, JsonValue] | JsonValue | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> "TestResponse":
         return client.patch(
             path,
             data=body if body is not None else {},
             content_type="application/json",
-            **_with_auth(kwargs),
+            headers=_with_auth(headers),
         )
 
     return _patch

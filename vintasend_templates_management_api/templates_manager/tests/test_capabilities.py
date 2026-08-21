@@ -1,15 +1,16 @@
 """What the capabilities endpoint publishes, and what the list route does with it."""
 
-from typing import Any, Callable
+from collections.abc import Callable
 
 from vintasend_managed_templates.constants import ManagedTemplateStatus
 from vintasend_managed_templates.managed_template_service import ManagedTemplateService
 
 from ..capabilities import DEFAULT_TEMPLATE_BACKEND_FILTER_CAPABILITIES
+from .conftest import ReadRequest
 from .fakes import InMemoryTemplateManagerBackend
 
 
-def test_a_backend_with_no_report_is_fully_capable(get: Callable[..., Any]) -> None:
+def test_a_backend_with_no_report_is_fully_capable(get: ReadRequest) -> None:
     """`BaseTemplateManagerBackend` declares no capability method; saying nothing is fine."""
     response = get("/api/v1/capabilities")
 
@@ -18,7 +19,7 @@ def test_a_backend_with_no_report_is_fully_capable(get: Callable[..., Any]) -> N
 
 
 def test_a_backends_report_is_merged_over_the_default(
-    get: Callable[..., Any], install_service: Callable[..., ManagedTemplateService]
+    get: ReadRequest, install_service: Callable[..., ManagedTemplateService]
 ) -> None:
     """A backend declares only what it cannot do; everything else stays supported."""
     install_service(
@@ -35,7 +36,7 @@ def test_a_backends_report_is_merged_over_the_default(
 
 
 def test_non_boolean_values_are_coerced(
-    get: Callable[..., Any], install_service: Callable[..., ManagedTemplateService]
+    get: ReadRequest, install_service: Callable[..., ManagedTemplateService]
 ) -> None:
     """The contract types these as booleans, so a truthy non-boolean cannot leak through."""
     install_service(template_backend=InMemoryTemplateManagerBackend(capabilities={"fields.key": 0}))
@@ -43,7 +44,7 @@ def test_non_boolean_values_are_coerced(
     assert get("/api/v1/capabilities").json()["data"]["fields.key"] is False
 
 
-def test_no_ordering_capability_is_published(get: Callable[..., Any]) -> None:
+def test_no_ordering_capability_is_published(get: ReadRequest) -> None:
     """The seam takes no ordering argument, so there is no ordering to negotiate."""
     data = get("/api/v1/capabilities").json()["data"]
 
@@ -51,7 +52,7 @@ def test_no_ordering_capability_is_published(get: Callable[..., Any]) -> None:
 
 
 def test_the_list_route_offers_no_ordering_parameter(
-    get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    get: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     """Sorting one page would be right on page 1 and wrong after it, silently.
 
@@ -70,7 +71,7 @@ def test_the_list_route_offers_no_ordering_parameter(
 
 
 def test_falls_back_to_an_exact_match_without_includes(
-    get: Callable[..., Any], install_service: Callable[..., ManagedTemplateService]
+    get: ReadRequest, install_service: Callable[..., ManagedTemplateService]
 ) -> None:
     backend = InMemoryTemplateManagerBackend(capabilities={"stringLookups.includes": False})
     install_service(template_backend=backend)
@@ -81,7 +82,7 @@ def test_falls_back_to_an_exact_match_without_includes(
 
 
 def test_falls_back_to_a_case_sensitive_match_without_case_folding(
-    get: Callable[..., Any], install_service: Callable[..., ManagedTemplateService]
+    get: ReadRequest, install_service: Callable[..., ManagedTemplateService]
 ) -> None:
     backend = InMemoryTemplateManagerBackend(
         capabilities={"stringLookups.includes": False, "stringLookups.caseInsensitive": False}
@@ -94,7 +95,7 @@ def test_falls_back_to_a_case_sensitive_match_without_case_folding(
 
 
 def test_case_sensitivity_is_read_from_its_own_key(
-    get: Callable[..., Any], install_service: Callable[..., ManagedTemplateService]
+    get: ReadRequest, install_service: Callable[..., ManagedTemplateService]
 ) -> None:
     """`caseSensitive` and `caseInsensitive` are independent, not a flag and its negation.
 
@@ -109,7 +110,7 @@ def test_case_sensitivity_is_read_from_its_own_key(
 
 
 def test_an_unsupported_field_is_dropped_rather_than_failing_the_request(
-    get: Callable[..., Any], install_service: Callable[..., ManagedTemplateService]
+    get: ReadRequest, install_service: Callable[..., ManagedTemplateService]
 ) -> None:
     backend = InMemoryTemplateManagerBackend(capabilities={"fields.status": False})
     install_service(template_backend=backend)
@@ -123,7 +124,7 @@ def test_an_unsupported_field_is_dropped_rather_than_failing_the_request(
 
 
 def test_a_backend_that_cannot_collapse_versions_gets_every_version(
-    get: Callable[..., Any], install_service: Callable[..., ManagedTemplateService]
+    get: ReadRequest, install_service: Callable[..., ManagedTemplateService]
 ) -> None:
     """Declining `fields.mostRecentActiveVersion` drops the filter, like any other.
 
@@ -141,17 +142,17 @@ def test_a_backend_that_cannot_collapse_versions_gets_every_version(
 
 
 def test_capabilities_are_read_once_per_process(
-    get: Callable[..., Any], install_service: Callable[..., ManagedTemplateService]
+    get: ReadRequest, install_service: Callable[..., ManagedTemplateService]
 ) -> None:
     """A backend's capabilities are static, so re-asking every request would buy nothing."""
     calls: list[int] = []
 
-    def counting_report() -> dict[str, bool]:
+    def counting_report() -> dict[str, object]:
         calls.append(1)
         return {}
 
     backend = InMemoryTemplateManagerBackend()
-    backend.get_filter_capabilities = counting_report  # type: ignore[attr-defined]
+    backend.get_filter_capabilities = counting_report
     install_service(template_backend=backend)
 
     get("/api/v1/capabilities")

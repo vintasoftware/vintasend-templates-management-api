@@ -44,7 +44,58 @@ build-backend = "poetry.core.masonry.api"
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "vintasend_templates_management_api.settings"
 python_files = ["test_*.py"]
+# The tests live inside the package, next to what they exercise.
 testpaths = ["vintasend_templates_management_api"]
+addopts = [
+    # Fail on an unregistered marker or an unknown ini key rather than ignoring it. Both
+    # typos are silent by default: a misspelled marker simply never matches, so a test you
+    # believe is excluded keeps running (or one you believe runs never does).
+    "--strict-markers",
+    "--strict-config",
+    # Summarise everything that did not plainly pass, so a skip or an xfail that should
+    # have been fixed stays visible instead of scrolling past as a dot.
+    "-ra",
+    # Coverage runs on every invocation and fails the suite below the floor, so a coverage
+    # regression surfaces in the same run as a behaviour regression. Branch coverage
+    # because most of the risk here is in conditionals -- capability negotiation, optional
+    # `version` handling, the status transition table.
+    "--cov=vintasend_templates_management_api",
+    "--cov-branch",
+    "--cov-report=term-missing",
+    "--cov-fail-under=95",
+    # Keep each test module on one xdist worker. The suite mutates a process-wide service
+    # singleton, so splitting a module across workers would be a needless risk.
+    "--dist=loadscope",
+]
+# The suite is warning-clean, so a new warning is a regression worth failing on -- a
+# deprecation from Django, pydantic or ninja is exactly the signal that gets ignored
+# otherwise, right up until the release that removes the thing.
+filterwarnings = ["error"]
+# An `xfail` that starts passing is a failure: it means the bug is fixed and the marker
+# should go, which is worth being told about rather than silently reported as xpass.
+xfail_strict = true
+
+[tool.coverage.run]
+branch = true
+source = ["vintasend_templates_management_api"]
+omit = [
+    # Process entrypoints. Both are three lines that a WSGI/ASGI server imports and no test
+    # ever does; counting them would only ever mean "the server was not started".
+    "*/wsgi.py",
+    "*/asgi.py",
+    # The suite's own code. Measuring how thoroughly the tests test themselves inflates the
+    # headline number and hides gaps in the code that actually ships.
+    "*/tests/*",
+]
+
+[tool.coverage.report]
+exclude_also = [
+    # Bodies that exist only to satisfy the ABC / typing, never executed.
+    "^\\s*\\.\\.\\.$",
+    "if TYPE_CHECKING:",
+    # A guard that only fires on a misconfigured deployment, raising immediately.
+    "raise NotImplementedError",
+]
 
 [tool.ruff]
 line-length = 100
@@ -94,7 +145,49 @@ python_version = "3.10"
 show_error_codes = true
 strict_equality = true
 warn_no_return = true
+# django-stubs. The plugin (not just the stub package) is what makes `settings.FOO`
+# resolve against this project's own settings module rather than coming back as `Any`,
+# so it earns its keep beyond the bundled Django stubs -- see [tool.django-stubs] below.
 plugins = ["mypy_django_plugin.main"]
+
+# Everything below is on because the code passes it today. Each was measured before being
+# enabled; anything that would have needed code changes is listed as deferred instead.
+#
+# Untyped code is the thing most worth keeping out: a function missing an annotation is
+# silently exempt from checking, which is how a project ends up nominally type-checked and
+# actually not.
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_calls = true
+# Catches an `Any` leaking out through a typed signature -- the failure mode that makes a
+# return annotation a comment rather than a check.
+warn_return_any = true
+# A `type: ignore` that stopped being needed is a claim the code no longer makes. Safe to
+# enable here, unlike in the root package, because this project has no optional
+# dependencies whose presence changes which ignores are live.
+warn_unused_ignores = true
+warn_redundant_casts = true
+# This project ships no py.typed and is an application, not a library, so its re-export
+# surface is not a public API. On anyway: it keeps a module from acquiring a name it never
+# meant to export, which is what makes an import cycle easy to introduce by accident.
+no_implicit_reexport = true
+extra_checks = true
+
+# Deliberately NOT enabled, each needing a round of code changes first. Counts are from
+# the current tree; re-measure with `mypy --<flag>` before acting on one.
+#   disallow_any_generics   (31 hits) - `ManagedTemplateService` and `ManagedTemplateRenderer`
+#                                       are generic in their template-content type, and the
+#                                       TypeVar is invariant. Parameterising every mention
+#                                       would reject a concretely-typed service where a
+#                                       general one is expected, so the realistic fix is
+#                                       `[Any]` at each boundary -- more `Any`, not less.
+#                                       Worth revisiting if the seam's TypeVar becomes
+#                                       covariant, or if ServiceCaller itself goes generic.
+#   disallow_any_explicit   (59 hits) - would ban the remaining deliberate `Any`s, which are
+#                                       the in-memory filter evaluator in tests/fakes.py and
+#                                       the OpenAPI document in export_openapi.py. Both are
+#                                       genuinely dynamic; typing them costs casts.
+#   --strict                (34 hits) - the union of the two above.
 
 [tool.django-stubs]
 django_settings_module = "vintasend_templates_management_api.settings"

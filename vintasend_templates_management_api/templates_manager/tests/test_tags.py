@@ -5,20 +5,37 @@ being checked is the whole path: query validation, capability negotiation, the s
 normalization, and the wire shape that comes back.
 """
 
-from typing import Any, Callable
+from collections.abc import Callable, Mapping, Sequence
 
 import pytest
+from pydantic import JsonValue
 from vintasend_managed_templates.constants import ManagedTemplateTagStatus
+from vintasend_managed_templates.managed_template_service import ManagedTemplateService
 
+from .conftest import ReadRequest, WriteRequest
 from .fakes import InMemoryTemplateManagerBackend
 
 
-def slugs(rows: list[dict[str, Any]]) -> list[str]:
-    return [row["slug"] for row in rows]
+def rows_of(body: Mapping[str, JsonValue]) -> list[Mapping[str, JsonValue]]:
+    """Narrow a list envelope's ``data`` to rows, once, so callers can index them.
+
+    Response JSON arrives untyped, and every helper below would otherwise re-assert its
+    shape. Failing here with the envelope that came back also beats a ``TypeError`` raised
+    somewhere further into a test.
+    """
+    data = body["data"]
+    assert isinstance(data, list), f"expected a list envelope, got {body!r}"
+    rows: list[Mapping[str, JsonValue]] = [row for row in data if isinstance(row, Mapping)]
+    assert len(rows) == len(data), f"expected every row to be an object, got {data!r}"
+    return rows
 
 
-def keys(body: dict[str, Any]) -> list[str]:
-    return [row["key"] for row in body["data"]]
+def slugs(rows: Sequence[Mapping[str, JsonValue]]) -> list[str]:
+    return [str(row["slug"]) for row in rows]
+
+
+def keys(body: Mapping[str, JsonValue]) -> list[str]:
+    return [str(row["key"]) for row in rows_of(body)]
 
 
 @pytest.fixture
@@ -38,7 +55,7 @@ def tagged(backend: InMemoryTemplateManagerBackend) -> InMemoryTemplateManagerBa
 # ----------------------------------------------------------------------
 
 
-def test_creates_a_tag_and_derives_its_slug(post: Callable[..., Any]) -> None:
+def test_creates_a_tag_and_derives_its_slug(post: WriteRequest) -> None:
     response = post("/api/v1/tags", {"text": "Black Friday"})
 
     assert response.status_code == 201
@@ -48,7 +65,7 @@ def test_creates_a_tag_and_derives_its_slug(post: Callable[..., Any]) -> None:
     assert tag["status"] == "active"
 
 
-def test_serializes_every_tag_contract_field(post: Callable[..., Any]) -> None:
+def test_serializes_every_tag_contract_field(post: WriteRequest) -> None:
     tag = post("/api/v1/tags", {"text": "Black Friday", "tenant": "acme"}).json()["data"]
 
     assert tag == {
@@ -62,7 +79,7 @@ def test_serializes_every_tag_contract_field(post: Callable[..., Any]) -> None:
     }
 
 
-def test_creating_a_tag_whose_slug_is_taken_is_a_conflict(post: Callable[..., Any]) -> None:
+def test_creating_a_tag_whose_slug_is_taken_is_a_conflict(post: WriteRequest) -> None:
     """The request was well-formed and what it asked for is already there -- 409, not 400."""
     post("/api/v1/tags", {"text": "Black Friday"})
 
@@ -73,39 +90,35 @@ def test_creating_a_tag_whose_slug_is_taken_is_a_conflict(post: Callable[..., An
 
 
 @pytest.mark.parametrize("text", ["!!!", "---", "@#$"])
-def test_a_tag_with_nothing_sluggable_is_a_bad_request(post: Callable[..., Any], text: str) -> None:
+def test_a_tag_with_nothing_sluggable_is_a_bad_request(post: WriteRequest, text: str) -> None:
     response = post("/api/v1/tags", {"text": text})
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "BAD_REQUEST"
 
 
-def test_a_blank_tag_text_is_rejected_by_validation(post: Callable[..., Any]) -> None:
+def test_a_blank_tag_text_is_rejected_by_validation(post: WriteRequest) -> None:
     response = post("/api/v1/tags", {"text": ""})
 
     assert response.status_code == 400
     assert response.json()["error"]["details"]["issues"][0]["path"] == "text"
 
 
-def test_reads_a_tag_by_slug_or_by_its_text(
-    post: Callable[..., Any], get: Callable[..., Any]
-) -> None:
+def test_reads_a_tag_by_slug_or_by_its_text(post: WriteRequest, get: ReadRequest) -> None:
     post("/api/v1/tags", {"text": "Black Friday"})
 
     assert get("/api/v1/tags/black-friday").json()["data"]["text"] == "Black Friday"
     assert get("/api/v1/tags/Black%20Friday").json()["data"]["text"] == "Black Friday"
 
 
-def test_reading_an_unknown_tag_is_a_404(get: Callable[..., Any]) -> None:
+def test_reading_an_unknown_tag_is_a_404(get: ReadRequest) -> None:
     response = get("/api/v1/tags/nope")
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "NOT_FOUND"
 
 
-def test_renaming_a_tag_regenerates_its_slug(
-    post: Callable[..., Any], patch: Callable[..., Any]
-) -> None:
+def test_renaming_a_tag_regenerates_its_slug(post: WriteRequest, patch: WriteRequest) -> None:
     post("/api/v1/tags", {"text": "Blak Friday"})
 
     response = patch("/api/v1/tags/blak-friday", {"text": "Black Friday"})
@@ -119,7 +132,7 @@ def test_renaming_a_tag_regenerates_its_slug(
 
 
 def test_a_rename_reaches_the_templates_carrying_the_tag(
-    post: Callable[..., Any], patch: Callable[..., Any], get: Callable[..., Any]
+    post: WriteRequest, patch: WriteRequest, get: ReadRequest
 ) -> None:
     post(
         "/api/v1/templates",
@@ -139,7 +152,7 @@ def test_a_rename_reaches_the_templates_carrying_the_tag(
 
 
 def test_renaming_onto_a_taken_slug_gets_a_numeric_suffix(
-    post: Callable[..., Any], patch: Callable[..., Any]
+    post: WriteRequest, patch: WriteRequest
 ) -> None:
     post("/api/v1/tags", {"text": "Black Friday"})
     post("/api/v1/tags", {"text": "Cyber Monday"})
@@ -150,18 +163,18 @@ def test_renaming_onto_a_taken_slug_gets_a_numeric_suffix(
 
 
 def test_renaming_to_text_with_nothing_sluggable_is_a_bad_request(
-    post: Callable[..., Any], patch: Callable[..., Any]
+    post: WriteRequest, patch: WriteRequest
 ) -> None:
     post("/api/v1/tags", {"text": "Black Friday"})
 
     assert patch("/api/v1/tags/black-friday", {"text": "!!!"}).status_code == 400
 
 
-def test_renaming_an_unknown_tag_is_a_404(patch: Callable[..., Any]) -> None:
+def test_renaming_an_unknown_tag_is_a_404(patch: WriteRequest) -> None:
     assert patch("/api/v1/tags/nope", {"text": "Whatever"}).status_code == 404
 
 
-def test_archiving_a_tag_retires_it(post: Callable[..., Any]) -> None:
+def test_archiving_a_tag_retires_it(post: WriteRequest) -> None:
     post("/api/v1/tags", {"text": "Onboarding"})
 
     response = post("/api/v1/tags/onboarding/archive")
@@ -170,20 +183,18 @@ def test_archiving_a_tag_retires_it(post: Callable[..., Any]) -> None:
     assert response.json()["data"]["status"] == "archived"
 
 
-def test_an_archived_tag_can_be_restored(post: Callable[..., Any]) -> None:
+def test_an_archived_tag_can_be_restored(post: WriteRequest) -> None:
     post("/api/v1/tags", {"text": "Onboarding"})
     post("/api/v1/tags/onboarding/archive")
 
     assert post("/api/v1/tags/onboarding/restore").json()["data"]["status"] == "active"
 
 
-def test_archiving_an_unknown_tag_is_a_404(post: Callable[..., Any]) -> None:
+def test_archiving_an_unknown_tag_is_a_404(post: WriteRequest) -> None:
     assert post("/api/v1/tags/nope/archive").status_code == 404
 
 
-def test_deletes_a_tag(
-    post: Callable[..., Any], delete: Callable[..., Any], get: Callable[..., Any]
-) -> None:
+def test_deletes_a_tag(post: WriteRequest, delete: ReadRequest, get: ReadRequest) -> None:
     post("/api/v1/tags", {"text": "Onboarding"})
 
     assert delete("/api/v1/tags/onboarding").status_code == 204
@@ -191,7 +202,7 @@ def test_deletes_a_tag(
 
 
 def test_deleting_a_tag_strips_it_from_the_templates_carrying_it(
-    post: Callable[..., Any], delete: Callable[..., Any], get: Callable[..., Any]
+    post: WriteRequest, delete: ReadRequest, get: ReadRequest
 ) -> None:
     post(
         "/api/v1/templates",
@@ -209,7 +220,7 @@ def test_deleting_a_tag_strips_it_from_the_templates_carrying_it(
     assert slugs(get("/api/v1/templates/welcome").json()["data"]["tags"]) == ["billing"]
 
 
-def test_deleting_an_unknown_tag_is_a_404(delete: Callable[..., Any]) -> None:
+def test_deleting_an_unknown_tag_is_a_404(delete: ReadRequest) -> None:
     assert delete("/api/v1/tags/nope").status_code == 404
 
 
@@ -219,7 +230,7 @@ def test_deleting_an_unknown_tag_is_a_404(delete: Callable[..., Any]) -> None:
 
 
 def test_lists_tags_with_the_pagination_envelope(
-    get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    get: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.get_or_create_tags(["Onboarding", "Billing"])
 
@@ -230,7 +241,7 @@ def test_lists_tags_with_the_pagination_envelope(
 
 
 def test_tag_pages_are_one_indexed(
-    get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    get: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.get_or_create_tags(["Alpha", "Beta"])
 
@@ -243,7 +254,7 @@ def test_tag_pages_are_one_indexed(
 
 
 def test_tags_can_be_narrowed_by_status(
-    get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    get: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.get_or_create_tags(["Onboarding", "Billing"])
     backend.set_tag_status("billing", ManagedTemplateTagStatus.ARCHIVED)
@@ -253,7 +264,7 @@ def test_tags_can_be_narrowed_by_status(
 
 
 def test_repeating_the_status_parameter_asks_for_several(
-    get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    get: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.get_or_create_tags(["Onboarding", "Billing"])
     backend.set_tag_status("billing", ManagedTemplateTagStatus.ARCHIVED)
@@ -263,26 +274,24 @@ def test_repeating_the_status_parameter_asks_for_several(
     assert sorted(slugs(body["data"])) == ["billing", "onboarding"]
 
 
-def test_an_unknown_tag_status_is_a_bad_request(get: Callable[..., Any]) -> None:
+def test_an_unknown_tag_status_is_a_bad_request(get: ReadRequest) -> None:
     assert get("/api/v1/tags?status=nope").status_code == 400
 
 
-def test_tags_can_be_searched(
-    get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
-) -> None:
+def test_tags_can_be_searched(get: ReadRequest, backend: InMemoryTemplateManagerBackend) -> None:
     backend.get_or_create_tags(["Black Friday", "Onboarding"])
 
     assert slugs(get("/api/v1/tags?search=friday").json()["data"]) == ["black-friday"]
 
 
 def test_a_blank_search_is_rejected_rather_than_matching_everything(
-    get: Callable[..., Any],
+    get: ReadRequest,
 ) -> None:
     assert get("/api/v1/tags?search=%20%20").status_code == 400
 
 
 def test_tags_can_be_narrowed_by_tenant(
-    get: Callable[..., Any], backend: InMemoryTemplateManagerBackend
+    get: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
     backend.get_or_create_tags(["Onboarding"], "acme")
     backend.get_or_create_tags(["Billing"], "other")
@@ -304,7 +313,7 @@ CREATE_BODY = {
 
 
 def test_creating_a_template_with_tags_creates_them_on_the_fly(
-    post: Callable[..., Any], get: Callable[..., Any]
+    post: WriteRequest, get: ReadRequest
 ) -> None:
     response = post("/api/v1/templates", {**CREATE_BODY, "tags": ["Transactional", "Onboarding"]})
 
@@ -313,11 +322,11 @@ def test_creating_a_template_with_tags_creates_them_on_the_fly(
     assert sorted(slugs(get("/api/v1/tags").json()["data"])) == ["onboarding", "transactional"]
 
 
-def test_a_template_created_without_tags_reports_an_empty_list(post: Callable[..., Any]) -> None:
+def test_a_template_created_without_tags_reports_an_empty_list(post: WriteRequest) -> None:
     assert post("/api/v1/templates", CREATE_BODY).json()["data"]["tags"] == []
 
 
-def test_a_template_tag_that_cannot_be_slugified_is_a_bad_request(post: Callable[..., Any]) -> None:
+def test_a_template_tag_that_cannot_be_slugified_is_a_bad_request(post: WriteRequest) -> None:
     response = post("/api/v1/templates", {**CREATE_BODY, "tags": ["!!!"]})
 
     assert response.status_code == 400
@@ -325,7 +334,7 @@ def test_a_template_tag_that_cannot_be_slugified_is_a_bad_request(post: Callable
 
 
 def test_a_new_version_carries_the_tags_forward_when_none_are_sent(
-    post: Callable[..., Any],
+    post: WriteRequest,
 ) -> None:
     post("/api/v1/templates", {**CREATE_BODY, "tags": ["Onboarding"]})
 
@@ -334,7 +343,7 @@ def test_a_new_version_carries_the_tags_forward_when_none_are_sent(
     assert slugs(response.json()["data"]["tags"]) == ["onboarding"]
 
 
-def test_a_new_version_can_replace_the_tags(post: Callable[..., Any]) -> None:
+def test_a_new_version_can_replace_the_tags(post: WriteRequest) -> None:
     post("/api/v1/templates", {**CREATE_BODY, "tags": ["Onboarding"]})
 
     response = post("/api/v1/templates/welcome/versions", {"tags": ["Billing"]})
@@ -342,7 +351,7 @@ def test_a_new_version_can_replace_the_tags(post: Callable[..., Any]) -> None:
     assert slugs(response.json()["data"]["tags"]) == ["billing"]
 
 
-def test_a_new_version_can_clear_the_tags_with_an_empty_list(post: Callable[..., Any]) -> None:
+def test_a_new_version_can_clear_the_tags_with_an_empty_list(post: WriteRequest) -> None:
     """`[]` and an omitted field mean different things on this body, unlike every other."""
     post("/api/v1/templates", {**CREATE_BODY, "tags": ["Onboarding"]})
 
@@ -352,7 +361,7 @@ def test_a_new_version_can_clear_the_tags_with_an_empty_list(post: Callable[...,
 
 
 def test_retagging_a_version_in_place_does_not_create_a_version(
-    post: Callable[..., Any], put: Callable[..., Any], get: Callable[..., Any]
+    post: WriteRequest, put: WriteRequest, get: ReadRequest
 ) -> None:
     created = post("/api/v1/templates", {**CREATE_BODY, "tags": ["Onboarding"]}).json()["data"]
 
@@ -363,9 +372,7 @@ def test_retagging_a_version_in_place_does_not_create_a_version(
     assert len(get("/api/v1/templates/welcome/versions").json()["data"]) == 1
 
 
-def test_retagging_leaves_the_versions_status_alone(
-    post: Callable[..., Any], put: Callable[..., Any]
-) -> None:
+def test_retagging_leaves_the_versions_status_alone(post: WriteRequest, put: WriteRequest) -> None:
     post("/api/v1/templates", CREATE_BODY)
     post("/api/v1/templates/welcome/activate")
 
@@ -376,7 +383,7 @@ def test_retagging_leaves_the_versions_status_alone(
 
 
 def test_retagging_with_an_empty_list_clears_the_tags(
-    post: Callable[..., Any], put: Callable[..., Any]
+    post: WriteRequest, put: WriteRequest
 ) -> None:
     post("/api/v1/templates", {**CREATE_BODY, "tags": ["Onboarding"]})
 
@@ -384,7 +391,7 @@ def test_retagging_with_an_empty_list_clears_the_tags(
 
 
 def test_retagging_can_name_an_explicit_version(
-    post: Callable[..., Any], put: Callable[..., Any], get: Callable[..., Any]
+    post: WriteRequest, put: WriteRequest, get: ReadRequest
 ) -> None:
     post("/api/v1/templates", {**CREATE_BODY, "tags": ["Onboarding"]})
     post("/api/v1/templates/welcome/versions", {"name": "v2"})
@@ -397,12 +404,12 @@ def test_retagging_can_name_an_explicit_version(
     ]
 
 
-def test_retagging_an_unknown_template_is_a_404(put: Callable[..., Any]) -> None:
+def test_retagging_an_unknown_template_is_a_404(put: WriteRequest) -> None:
     assert put("/api/v1/templates/nope/tags", {"tags": ["Billing"]}).status_code == 404
 
 
 def test_retagging_with_an_unusable_tag_is_a_bad_request(
-    post: Callable[..., Any], put: Callable[..., Any]
+    post: WriteRequest, put: WriteRequest
 ) -> None:
     post("/api/v1/templates", CREATE_BODY)
 
@@ -414,20 +421,24 @@ def test_retagging_with_an_unusable_tag_is_a_bad_request(
 # ----------------------------------------------------------------------
 
 
-def test_includes_all_tags_requires_every_tag(get: Callable[..., Any], tagged: Any) -> None:
+def test_includes_all_tags_requires_every_tag(
+    get: ReadRequest, tagged: InMemoryTemplateManagerBackend
+) -> None:
     body = get("/api/v1/templates?includesAllTags=transactional&includesAllTags=onboarding").json()
 
     assert keys(body) == ["welcome"]
 
 
-def test_includes_any_of_tags_requires_only_one(get: Callable[..., Any], tagged: Any) -> None:
+def test_includes_any_of_tags_requires_only_one(
+    get: ReadRequest, tagged: InMemoryTemplateManagerBackend
+) -> None:
     body = get("/api/v1/templates?includesAnyOfTags=onboarding&includesAnyOfTags=billing").json()
 
     assert sorted(keys(body)) == ["receipt", "welcome"]
 
 
 def test_a_single_tag_means_the_same_under_either_parameter(
-    get: Callable[..., Any], tagged: Any
+    get: ReadRequest, tagged: InMemoryTemplateManagerBackend
 ) -> None:
     all_of = get("/api/v1/templates?includesAllTags=transactional").json()
     any_of = get("/api/v1/templates?includesAnyOfTags=transactional").json()
@@ -436,31 +447,37 @@ def test_a_single_tag_means_the_same_under_either_parameter(
 
 
 def test_a_tag_filter_accepts_the_text_behind_the_slug(
-    get: Callable[..., Any], tagged: Any
+    get: ReadRequest, tagged: InMemoryTemplateManagerBackend
 ) -> None:
     body = get("/api/v1/templates?includesAnyOfTags=Transactional").json()
 
     assert sorted(keys(body)) == ["receipt", "welcome"]
 
 
-def test_an_unknown_tag_matches_nothing(get: Callable[..., Any], tagged: Any) -> None:
+def test_an_unknown_tag_matches_nothing(
+    get: ReadRequest, tagged: InMemoryTemplateManagerBackend
+) -> None:
     assert get("/api/v1/templates?includesAnyOfTags=nope").json()["data"] == []
 
 
-def test_the_two_tag_parameters_combine_with_and(get: Callable[..., Any], tagged: Any) -> None:
+def test_the_two_tag_parameters_combine_with_and(
+    get: ReadRequest, tagged: InMemoryTemplateManagerBackend
+) -> None:
     body = get("/api/v1/templates?includesAllTags=transactional&includesAnyOfTags=billing").json()
 
     assert keys(body) == ["receipt"]
 
 
-def test_a_tag_filter_combines_with_the_other_filters(get: Callable[..., Any], tagged: Any) -> None:
+def test_a_tag_filter_combines_with_the_other_filters(
+    get: ReadRequest, tagged: InMemoryTemplateManagerBackend
+) -> None:
     body = get("/api/v1/templates?includesAnyOfTags=transactional&key=receipt").json()
 
     assert keys(body) == ["receipt"]
 
 
 def test_a_blank_tag_filter_is_rejected_rather_than_matching_nothing(
-    get: Callable[..., Any],
+    get: ReadRequest,
 ) -> None:
     """A parameter present but empty is a client bug, not a filter that silently matches
     nothing -- which is what ``includesAnyOfTags`` with no tags would be."""
@@ -471,7 +488,7 @@ def test_a_blank_tag_filter_is_rejected_rather_than_matching_nothing(
 
 
 def test_blank_entries_alongside_real_ones_are_dropped(
-    get: Callable[..., Any], tagged: Any
+    get: ReadRequest, tagged: InMemoryTemplateManagerBackend
 ) -> None:
     """A trailing comma in a tag input is a UI artifact, not something a person meant."""
     body = get("/api/v1/templates?includesAnyOfTags=transactional&includesAnyOfTags=%20").json()
@@ -479,14 +496,14 @@ def test_blank_entries_alongside_real_ones_are_dropped(
     assert sorted(keys(body)) == ["receipt", "welcome"]
 
 
-def test_too_many_tags_in_one_filter_are_rejected(get: Callable[..., Any]) -> None:
+def test_too_many_tags_in_one_filter_are_rejected(get: ReadRequest) -> None:
     query = "&".join(f"includesAllTags=tag-{index}" for index in range(51))
 
     assert get(f"/api/v1/templates?{query}").status_code == 400
 
 
 def test_tag_filters_paginate_without_duplicating_a_multi_tag_match(
-    get: Callable[..., Any], tagged: Any
+    get: ReadRequest, tagged: InMemoryTemplateManagerBackend
 ) -> None:
     query = "includesAnyOfTags=transactional&includesAnyOfTags=onboarding"
     first = get(f"/api/v1/templates?{query}&page=1&pageSize=1").json()
@@ -497,7 +514,7 @@ def test_tag_filters_paginate_without_duplicating_a_multi_tag_match(
 
 
 def test_filtering_by_an_archived_tag_still_finds_its_templates(
-    get: Callable[..., Any], post: Callable[..., Any], tagged: Any
+    get: ReadRequest, post: WriteRequest, tagged: InMemoryTemplateManagerBackend
 ) -> None:
     post("/api/v1/tags/transactional/archive")
 
@@ -507,7 +524,7 @@ def test_filtering_by_an_archived_tag_still_finds_its_templates(
 
 
 def test_templates_report_their_tags_in_the_list_response(
-    get: Callable[..., Any], tagged: Any
+    get: ReadRequest, tagged: InMemoryTemplateManagerBackend
 ) -> None:
     rows = {row["key"]: row for row in get("/api/v1/templates").json()["data"]}
 
@@ -520,7 +537,7 @@ def test_templates_report_their_tags_in_the_list_response(
 # ----------------------------------------------------------------------
 
 
-def test_the_tag_capabilities_default_to_supported(get: Callable[..., Any]) -> None:
+def test_the_tag_capabilities_default_to_supported(get: ReadRequest) -> None:
     capabilities = get("/api/v1/capabilities").json()["data"]
 
     assert capabilities["fields.includesAllTags"] is True
@@ -528,7 +545,7 @@ def test_the_tag_capabilities_default_to_supported(get: Callable[..., Any]) -> N
 
 
 def test_a_declined_tag_filter_is_dropped_rather_than_failing_the_request(
-    get: Callable[..., Any], install_service: Callable[..., Any]
+    get: ReadRequest, install_service: Callable[..., ManagedTemplateService]
 ) -> None:
     """Dropping an unsupported filter is the contract's choice; failing the request is not."""
     backend = InMemoryTemplateManagerBackend(capabilities={"fields.includesAllTags": False})
@@ -543,7 +560,7 @@ def test_a_declined_tag_filter_is_dropped_rather_than_failing_the_request(
 
 
 def test_the_two_tag_capabilities_are_declined_independently(
-    get: Callable[..., Any], install_service: Callable[..., Any]
+    get: ReadRequest, install_service: Callable[..., ManagedTemplateService]
 ) -> None:
     """ "Every tag" and "at least one tag" are different queries, so they are different keys."""
     backend = InMemoryTemplateManagerBackend(capabilities={"fields.includesAllTags": False})

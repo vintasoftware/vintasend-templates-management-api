@@ -20,10 +20,10 @@ The imports below are illustrative -- install the implementation packages your d
 actually uses (``vintasend-django-templates-manager``, ``vintasend-jinja``, ...).
 """
 
-from typing import Any
+from vintasend_managed_templates.managed_template_service import ManagedTemplateService
 
 
-def create_template_service() -> Any:
+def create_template_service() -> ManagedTemplateService:
     raise NotImplementedError(
         "No managed-template service configured. Copy vintasend_config.example.py to "
         "vintasend_config.py, build your service there, and set "

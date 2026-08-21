@@ -22,12 +22,15 @@ What this class does absorb:
 
 import logging
 import threading
+from abc import ABC, abstractmethod
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Any, Literal
+from types import TracebackType
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 from django.conf import settings
 
 from vintasend.services.helpers import _import_class
+from vintasend.services.notification_template_renderers.base import NotificationSendInput
 from vintasend_managed_templates.composition import TemplateReference
 from vintasend_managed_templates.constants import ManagedTemplateStatus, ManagedTemplateTagStatus
 from vintasend_managed_templates.dataclasses import (
@@ -40,6 +43,7 @@ from vintasend_managed_templates.dataclasses import (
 from vintasend_managed_templates.exceptions import (
     ManagedTemplateChangeUserNotFoundError,
     ManagedTemplateCompositionError,
+    ManagedTemplateError,
     ManagedTemplateInvalidFilterError,
     ManagedTemplateInvalidTagError,
     ManagedTemplateNotFoundError,
@@ -55,7 +59,11 @@ from .errors import ApiError
 
 
 if TYPE_CHECKING:
-    from vintasend.services.dataclasses import NotificationContextDict
+    from vintasend.services.dataclasses import (
+        Notification,
+        NotificationContextDict,
+        OneOffNotification,
+    )
 
 
 logger = logging.getLogger(__name__)
@@ -96,6 +104,17 @@ def load_template_service(factory_path: str) -> ManagedTemplateService:
     if service is None:
         raise ServiceConfigurationError(
             f"The managed-template service factory {factory_path!r} did not return a service."
+        )
+
+    # The factory is operator-supplied and resolved by a dotted path, so its result is
+    # untyped whatever the factory annotates. Checking it here is what stops that untyped
+    # value spreading through every ServiceCaller method, and it turns "the factory
+    # returned the wrong thing" into a startup failure naming what it got -- rather than an
+    # AttributeError on the first request that reaches a method the object does not have.
+    if not isinstance(service, ManagedTemplateService):
+        raise ServiceConfigurationError(
+            f"The managed-template service factory {factory_path!r} returned a "
+            f"{type(service).__name__}, not a ManagedTemplateService."
         )
 
     return service
@@ -301,8 +320,11 @@ class ServiceCaller:
     # --- rendering -----------------------------------------------------------------
 
     def render_template(
-        self, notification: Any, template: ManagedTemplate, context: "NotificationContextDict"
-    ) -> Any:
+        self,
+        notification: "Notification | OneOffNotification",
+        template: ManagedTemplate,
+        context: "NotificationContextDict",
+    ) -> NotificationSendInput:
         """Render a template already in hand, with no second backend read.
 
         The template is fetched by the caller so a preview can pin an explicit version --
@@ -314,31 +336,63 @@ class ServiceCaller:
 # --- exception translation ---------------------------------------------------------
 
 
-class _not_found:  # noqa: N801 - a context manager used as a statement, named like one
+class _translating(ABC):  # noqa: N801 - a context manager used as a statement, named like one
+    """Base for the context managers that turn one library exception into one ApiError.
+
+    Each subclass names the exception it translates and how to describe it. Everything
+    else -- when to catch, when to stand aside, chaining the original as ``__cause__`` --
+    is here, so a new translation is a class attribute and a one-line method rather than
+    another copy of the same ``__exit__``.
+    """
+
+    #: The library exception this translates. Anything else propagates untouched.
+    translates: ClassVar[type[ManagedTemplateError]]
+
+    @abstractmethod
+    def to_api_error(self, exc: ManagedTemplateError) -> ApiError:
+        """Build the error to raise in place of ``exc``."""
+
+    # Returns None rather than the instance: no call site uses `with ... as`, and handing
+    # one back would suggest there is something on it worth reading.
+    def __enter__(self) -> None:
+        return None
+
+    # `Literal[False]` rather than `bool`: this never swallows an exception -- it either
+    # lets one through or replaces it with an ApiError. Typing it as `bool` would tell
+    # mypy the `with` body may be exited by a suppressed exception, which makes every
+    # caller that returns from inside one look like it has a path with no return.
+    #
+    # `isinstance` on the exception rather than `issubclass` on its type: it rules out the
+    # no-exception case in the same check, and narrows `exc` for the call below.
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> Literal[False]:
+        if not isinstance(exc, self.translates):
+            return False
+        raise self.to_api_error(exc) from exc
+
+
+class _not_found(_translating):  # noqa: N801
     """Turn the library's "no such template" into the contract's 404.
 
     A context manager rather than a decorator so the message can name the key and version
     that were actually asked for, which is what makes a 404 body useful.
     """
 
+    translates = ManagedTemplateNotFoundError
+
     def __init__(self, template_key: str, version: int | None) -> None:
         self.template_key = template_key
         self.version = version
 
-    def __enter__(self) -> "_not_found":
-        return self
-
-    # `Literal[False]` rather than `bool`: this never swallows an exception -- it either
-    # lets one through or replaces it with an ApiError. Typing it as `bool` would tell
-    # mypy the `with` body may be exited by a suppressed exception, which makes every
-    # caller that returns from inside one look like it has a path with no return.
-    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> Literal[False]:
-        if exc_type is None or not issubclass(exc_type, ManagedTemplateNotFoundError):
-            return False
-        raise ApiError.not_found(describe_missing(self.template_key, self.version)) from exc
+    def to_api_error(self, exc: ManagedTemplateError) -> ApiError:
+        return ApiError.not_found(describe_missing(self.template_key, self.version))
 
 
-class _composition_error:  # noqa: N801 - a context manager used as a statement, named like one
+class _composition_error(_translating):  # noqa: N801
     """Turn a template that cannot be assembled into the contract's 409.
 
     Deliberately not a 500: composition runs before any template engine, so a failure here
@@ -350,16 +404,13 @@ class _composition_error:  # noqa: N801 - a context manager used as a statement,
     exist is a broken composition of a template that does, not a missing template.
     """
 
-    def __enter__(self) -> "_composition_error":
-        return self
+    translates = ManagedTemplateCompositionError
 
-    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> Literal[False]:
-        if exc_type is None or not issubclass(exc_type, ManagedTemplateCompositionError):
-            return False
-        raise ApiError.composition_error(str(exc)) from exc
+    def to_api_error(self, exc: ManagedTemplateError) -> ApiError:
+        return ApiError.composition_error(str(exc))
 
 
-class _invalid_filter:  # noqa: N801 - a context manager used as a statement, named like one
+class _invalid_filter(_translating):  # noqa: N801
     """Turn a malformed or unknown-field filter into the contract's 400.
 
     ``ManagedTemplateService.validate_filter`` already produces a message naming the
@@ -367,31 +418,25 @@ class _invalid_filter:  # noqa: N801 - a context manager used as a statement, na
     rather than replaced with something vaguer.
     """
 
-    def __enter__(self) -> "_invalid_filter":
-        return self
+    translates = ManagedTemplateInvalidFilterError
 
-    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> Literal[False]:
-        if exc_type is None or not issubclass(exc_type, ManagedTemplateInvalidFilterError):
-            return False
-        raise ApiError.bad_request(str(exc)) from exc
+    def to_api_error(self, exc: ManagedTemplateError) -> ApiError:
+        return ApiError.bad_request(str(exc))
 
 
-class _tag_not_found:  # noqa: N801 - a context manager used as a statement, named like one
+class _tag_not_found(_translating):  # noqa: N801
     """Turn the library's "no such tag" into the contract's 404."""
+
+    translates = ManagedTemplateTagNotFoundError
 
     def __init__(self, slug: str) -> None:
         self.slug = slug
 
-    def __enter__(self) -> "_tag_not_found":
-        return self
-
-    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> Literal[False]:
-        if exc_type is None or not issubclass(exc_type, ManagedTemplateTagNotFoundError):
-            return False
-        raise ApiError.not_found(f"No tag with slug '{self.slug}' was found.") from exc
+    def to_api_error(self, exc: ManagedTemplateError) -> ApiError:
+        return ApiError.not_found(f"No tag with slug '{self.slug}' was found.")
 
 
-class _invalid_tag:  # noqa: N801 - a context manager used as a statement, named like one
+class _invalid_tag(_translating):  # noqa: N801
     """Turn unusable tag text into the contract's 400.
 
     Query validation rejects blank text, so what reaches here is text that is non-empty but
@@ -399,13 +444,10 @@ class _invalid_tag:  # noqa: N801 - a context manager used as a statement, named
     could have caught.
     """
 
-    def __enter__(self) -> "_invalid_tag":
-        return self
+    translates = ManagedTemplateInvalidTagError
 
-    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> Literal[False]:
-        if exc_type is None or not issubclass(exc_type, ManagedTemplateInvalidTagError):
-            return False
-        raise ApiError.bad_request(str(exc)) from exc
+    def to_api_error(self, exc: ManagedTemplateError) -> ApiError:
+        return ApiError.bad_request(str(exc))
 
 
 def describe_missing(template_key: str, version: int | None) -> str:
