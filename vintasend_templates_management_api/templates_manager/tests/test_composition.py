@@ -163,7 +163,7 @@ def test_a_version_can_be_pinned(get: ReadRequest, backend: InMemoryTemplateMana
     backend.add(
         key="welcome-email",
         version=1,
-        body_template='{% managed_extends "base-email[v1]" %}Hi',
+        body_template='{% managed_extends "base-email" version=1 %}Hi',
     )
 
     composed = get("/api/v1/templates/welcome-email/composition?version=1").json()["data"]

@@ -176,8 +176,7 @@ welcome       {% managed_extends "base-email" %}
 The tag language belongs to
 [`vintasend-managed-templates`](https://github.com/vintasoftware/vintasend-managed-templates#composition-bases-blocks-and-includes)
 — `managed_extends`, `managed_children`, `managed_block` / `managed_endblock`,
-`managed_super`, `managed_include`, with `"base-email[v2]"` or `version=2` to pin a
-reference. This API stores those templates as written and exposes what they assemble to.
+`managed_super`, `managed_include`, with `version=2` to pin a reference. This API stores those templates as written and exposes what they assemble to.
 
 **`GET /api/v1/templates/{key}/composition`** returns the assembled sources, plus what the
 version directly references and whether it is abstract:
