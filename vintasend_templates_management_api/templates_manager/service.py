@@ -1,0 +1,457 @@
+"""Loads the operator-provided ``ManagedTemplateService`` and adapts it to what the API needs.
+
+The API ships no template store of its own: which backend holds templates and which
+renderer turns them into send input is a deployment decision.
+``MANAGED_TEMPLATE_SERVICE_FACTORY`` names a callable that returns a configured
+``ManagedTemplateService``.
+
+Unlike ``vintasend-api``'s equivalent module, there is no sync/AsyncIO bridging here.
+``ManagedTemplateService`` has no AsyncIO twin -- it composes two synchronous seams,
+``BaseTemplateManagerBackend`` and ``ManagedTemplateRenderer`` -- so every call below is a
+plain call and the view layer is synchronous throughout. If an AsyncIO twin ships later,
+this module is the one place that has to learn about it.
+
+What this class does absorb:
+
+1. **Library exceptions become API errors.** Every route would otherwise repeat the same
+   ``except ManagedTemplateNotFoundError`` dance.
+2. **The transition table becomes data.** ``allowed_transitions`` asks the service the
+   same question ``set_status`` asks, so a response can tell a UI which moves will work
+   instead of leaving it to find out by catching a 409.
+"""
+
+import logging
+import threading
+from collections.abc import Iterable
+from typing import TYPE_CHECKING, Any, Literal
+
+from django.conf import settings
+
+from vintasend.services.helpers import _import_class
+from vintasend_managed_templates.composition import TemplateReference
+from vintasend_managed_templates.constants import ManagedTemplateStatus, ManagedTemplateTagStatus
+from vintasend_managed_templates.dataclasses import (
+    ManagedTemplate,
+    ManagedTemplateCreateInput,
+    ManagedTemplateStatusHistory,
+    ManagedTemplateTag,
+    ManagedTemplateUpdateInput,
+)
+from vintasend_managed_templates.exceptions import (
+    ManagedTemplateChangeUserNotFoundError,
+    ManagedTemplateCompositionError,
+    ManagedTemplateInvalidFilterError,
+    ManagedTemplateInvalidTagError,
+    ManagedTemplateNotFoundError,
+    ManagedTemplateStatusTransitionError,
+    ManagedTemplateTagAlreadyExistsError,
+    ManagedTemplateTagNotFoundError,
+)
+from vintasend_managed_templates.filters import ManagedTemplateFilter
+from vintasend_managed_templates.managed_template_service import ManagedTemplateService
+
+from .capabilities import get_backend_capabilities
+from .errors import ApiError
+
+
+if TYPE_CHECKING:
+    from vintasend.services.dataclasses import NotificationContextDict
+
+
+logger = logging.getLogger(__name__)
+
+
+class ServiceConfigurationError(RuntimeError):
+    """Raised when ``MANAGED_TEMPLATE_SERVICE_FACTORY`` cannot be resolved into a service."""
+
+
+def load_template_service(factory_path: str) -> ManagedTemplateService:
+    """Import and call the configured factory, returning the service it builds."""
+    if not factory_path:
+        raise ServiceConfigurationError(
+            "MANAGED_TEMPLATE_SERVICE_FACTORY is not set, so this API cannot build a "
+            "managed-template service to read from. Point it at a callable that returns "
+            "a configured ManagedTemplateService -- see vintasend_config.example.py."
+        )
+
+    try:
+        factory = _import_class(factory_path)
+    except (ImportError, ModuleNotFoundError, AttributeError, ValueError) as error:
+        raise ServiceConfigurationError(
+            f"Could not import the managed-template service factory {factory_path!r}."
+        ) from error
+
+    if not callable(factory):
+        raise ServiceConfigurationError(
+            f"The managed-template service factory {factory_path!r} is not callable."
+        )
+
+    try:
+        service = factory()
+    except Exception as error:
+        raise ServiceConfigurationError(
+            f"Calling the managed-template service factory {factory_path!r} failed."
+        ) from error
+
+    if service is None:
+        raise ServiceConfigurationError(
+            f"The managed-template service factory {factory_path!r} did not return a service."
+        )
+
+    return service
+
+
+class ServiceCaller:
+    """The slice of a ``ManagedTemplateService`` this API depends on, with the library's
+    exceptions already translated into the contract's errors.
+
+    Every method here raises ``ApiError`` and nothing else from the library's exception
+    hierarchy, so a route never has to decide what a given failure means on the wire.
+    """
+
+    def __init__(self, service: ManagedTemplateService) -> None:
+        self.service = service
+        self._capabilities_cache: dict[str, bool] | None = None
+
+    # --- capabilities --------------------------------------------------------------
+
+    def get_capabilities(self) -> dict[str, bool]:
+        """The backend's capability report, merged over the library default.
+
+        Cached for the life of this caller -- which is the life of the process. A
+        backend's capabilities are a static property of its implementation, so re-asking
+        on every request would buy nothing.
+        """
+        if self._capabilities_cache is None:
+            self._capabilities_cache = get_backend_capabilities(
+                self.service.template_manager_backend
+            )
+        return self._capabilities_cache
+
+    # --- reads ---------------------------------------------------------------------
+
+    def get_template(self, template_key: str, version: int | None = None) -> ManagedTemplate:
+        """One version of a template, or the latest when ``version`` is None."""
+        with _not_found(template_key, version):
+            return self.service.get_template(template_key, version)
+
+    def get_template_versions(self, template_key: str) -> list[ManagedTemplate]:
+        """Every version of a template, newest version first.
+
+        The service implements this by filtering on the key, which matches nothing for an
+        unknown key rather than raising -- so an empty list is how a missing key arrives
+        here, and the route turns it into the 404 the contract documents.
+        """
+        with _invalid_filter():
+            return self.service.get_template_versions(template_key)
+
+    def get_paginated_filtered_templates(
+        self, filters: ManagedTemplateFilter, page: int, page_size: int
+    ) -> list[ManagedTemplate]:
+        """One page of the templates matching ``filters``.
+
+        Page numbers pass straight through: ``ManagedTemplateService`` validates
+        ``page >= 1`` itself, so the wire's 1-indexing *is* the service's convention.
+        There is no per-backend numbering to negotiate the way ``vintasend-api`` has to
+        for notification backends, because no template call reaches the backend without
+        going through that validation first.
+        """
+        with _invalid_filter():
+            return self.service.get_paginated_filtered_templates(filters, page, page_size)
+
+    def get_status_history(
+        self, template_key: str, version: int | None = None
+    ) -> list[ManagedTemplateStatusHistory]:
+        """The status audit trail, most recent change first."""
+        with _not_found(template_key, version):
+            return self.service.get_status_history(template_key, version)
+
+    def allowed_transitions(self, template: ManagedTemplate) -> list[ManagedTemplateStatus]:
+        """Which statuses ``template`` may move to right now, in a stable order.
+
+        Asks the service rather than reading ``ALLOWED_STATUS_TRANSITIONS`` directly, so a
+        subclass with its own lifecycle -- or one with ``validate_status_transitions``
+        turned off, where every status is reachable -- is reported accurately.
+
+        The version's current status is excluded even though ``can_transition_to`` returns
+        True for it: setting a version to the status it already holds is a documented
+        no-op, not a transition, and offering it as an action would be offering to do
+        nothing.
+        """
+        return [
+            status
+            for status in ManagedTemplateStatus
+            if status is not template.status and self.service.can_transition_to(template, status)
+        ]
+
+    # --- writes --------------------------------------------------------------------
+
+    def create_template(self, data: ManagedTemplateCreateInput) -> ManagedTemplate:
+        with _invalid_tag():
+            return self.service.create_template(data)
+
+    def update_template(
+        self, template_key: str, data: ManagedTemplateUpdateInput
+    ) -> ManagedTemplate:
+        """Create a new version of an existing template from its latest one."""
+        with _not_found(template_key, None), _invalid_tag():
+            return self.service.update_template(template_key, data)
+
+    def delete_template(self, template_key: str, version: int | None = None) -> None:
+        with _not_found(template_key, version):
+            self.service.delete_template(template_key, version)
+
+    def set_status(
+        self,
+        template_key: str,
+        status: ManagedTemplateStatus,
+        version: int | None = None,
+        changed_by: str | None = None,
+    ) -> ManagedTemplate:
+        """Move one version to ``status``, reporting a refused move as the contract's 409."""
+        with _not_found(template_key, version):
+            try:
+                return self.service.set_status(template_key, status, version, changed_by)
+            except ManagedTemplateStatusTransitionError as error:
+                raise ApiError.invalid_transition(str(error)) from error
+            except ManagedTemplateChangeUserNotFoundError as error:
+                raise ApiError.bad_request(str(error)) from error
+
+    # --- tags ----------------------------------------------------------------------
+
+    def get_tags(
+        self,
+        status: list[ManagedTemplateTagStatus] | None = None,
+        search: str | None = None,
+        tenant: str | None = None,
+    ) -> list[ManagedTemplateTag]:
+        return self.service.get_tags(status, search, tenant)
+
+    def get_tag(self, slug: str) -> ManagedTemplateTag:
+        with _tag_not_found(slug):
+            return self.service.get_tag(slug)
+
+    def create_tag(self, text: str, tenant: str | None = None) -> ManagedTemplateTag:
+        """Create a tag, reporting a duplicate as the contract's 409.
+
+        A collision is a conflict rather than a validation error: the request was
+        well-formed, and what it asked for is already there.
+        """
+        with _invalid_tag():
+            try:
+                return self.service.create_tag(text, tenant)
+            except ManagedTemplateTagAlreadyExistsError as error:
+                raise ApiError.conflict(str(error)) from error
+
+    def update_tag(self, slug: str, text: str) -> ManagedTemplateTag:
+        with _tag_not_found(slug), _invalid_tag():
+            return self.service.update_tag(slug, text)
+
+    def set_tag_status(self, slug: str, status: ManagedTemplateTagStatus) -> ManagedTemplateTag:
+        with _tag_not_found(slug):
+            return self.service.set_tag_status(slug, status)
+
+    def delete_tag(self, slug: str) -> None:
+        with _tag_not_found(slug):
+            self.service.delete_tag(slug)
+
+    def set_template_tags(
+        self, template_key: str, tags: list[str], version: int | None = None
+    ) -> ManagedTemplate:
+        """Replace one version's tags in place -- no new version, no status change."""
+        with _not_found(template_key, version), _invalid_tag():
+            return self.service.set_template_tags(template_key, tags, version)
+
+    # --- composition ---------------------------------------------------------------
+
+    def get_composed_template(
+        self, template_key: str, version: int | None = None
+    ) -> ManagedTemplate:
+        """One version assembled the way the template engine will receive it.
+
+        Composition failures are the template's, not the request's: a base that does not
+        exist, a chain that loops, a malformed tag. They are reported as
+        ``TEMPLATE_COMPOSITION_ERROR`` carrying the library's message, which names the chain
+        it failed on -- the message is the point, since it is what makes the template
+        fixable.
+        """
+        with _not_found(template_key, version), _composition_error():
+            return self.service.get_composed_template(template_key, version)
+
+    def get_template_references(self, template: ManagedTemplate) -> list[TemplateReference]:
+        """The templates this version directly extends or includes.
+
+        Nothing is resolved, so a reference to a template that does not exist is reported
+        rather than raising. A malformed tag still is -- there is no reference to report
+        when the source cannot be parsed at all.
+        """
+        with _composition_error():
+            return self.service.get_template_references(template)
+
+    def is_abstract(self, template: ManagedTemplate) -> bool:
+        """Whether a version is a base to build on, recomputed from its source.
+
+        The authority behind the stored ``isAbstract`` flag on every template payload. Worth
+        asking when the flag cannot be trusted -- a backend that predates it, or a template
+        edited in memory since it was read.
+        """
+        with _composition_error():
+            return self.service.is_abstract(template)
+
+    # --- rendering -----------------------------------------------------------------
+
+    def render_template(
+        self, notification: Any, template: ManagedTemplate, context: "NotificationContextDict"
+    ) -> Any:
+        """Render a template already in hand, with no second backend read.
+
+        The template is fetched by the caller so a preview can pin an explicit version --
+        which is the point of previewing a draft that has not been activated.
+        """
+        return self.service.render_template(notification, template, context)
+
+
+# --- exception translation ---------------------------------------------------------
+
+
+class _not_found:  # noqa: N801 - a context manager used as a statement, named like one
+    """Turn the library's "no such template" into the contract's 404.
+
+    A context manager rather than a decorator so the message can name the key and version
+    that were actually asked for, which is what makes a 404 body useful.
+    """
+
+    def __init__(self, template_key: str, version: int | None) -> None:
+        self.template_key = template_key
+        self.version = version
+
+    def __enter__(self) -> "_not_found":
+        return self
+
+    # `Literal[False]` rather than `bool`: this never swallows an exception -- it either
+    # lets one through or replaces it with an ApiError. Typing it as `bool` would tell
+    # mypy the `with` body may be exited by a suppressed exception, which makes every
+    # caller that returns from inside one look like it has a path with no return.
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> Literal[False]:
+        if exc_type is None or not issubclass(exc_type, ManagedTemplateNotFoundError):
+            return False
+        raise ApiError.not_found(describe_missing(self.template_key, self.version)) from exc
+
+
+class _composition_error:  # noqa: N801 - a context manager used as a statement, named like one
+    """Turn a template that cannot be assembled into the contract's 409.
+
+    Deliberately not a 500: composition runs before any template engine, so a failure here
+    is a fact about the stored template -- exactly what the caller asked about -- and the
+    library's message names the reference chain that broke.
+
+    ``ManagedTemplateCompositionReferenceError`` is also a ``ManagedTemplateNotFoundError``,
+    so this has to sit *inside* ``_not_found`` at every call site: a base that does not
+    exist is a broken composition of a template that does, not a missing template.
+    """
+
+    def __enter__(self) -> "_composition_error":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> Literal[False]:
+        if exc_type is None or not issubclass(exc_type, ManagedTemplateCompositionError):
+            return False
+        raise ApiError.composition_error(str(exc)) from exc
+
+
+class _invalid_filter:  # noqa: N801 - a context manager used as a statement, named like one
+    """Turn a malformed or unknown-field filter into the contract's 400.
+
+    ``ManagedTemplateService.validate_filter`` already produces a message naming the
+    offending path and the known fields, so it is passed through as the error's message
+    rather than replaced with something vaguer.
+    """
+
+    def __enter__(self) -> "_invalid_filter":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> Literal[False]:
+        if exc_type is None or not issubclass(exc_type, ManagedTemplateInvalidFilterError):
+            return False
+        raise ApiError.bad_request(str(exc)) from exc
+
+
+class _tag_not_found:  # noqa: N801 - a context manager used as a statement, named like one
+    """Turn the library's "no such tag" into the contract's 404."""
+
+    def __init__(self, slug: str) -> None:
+        self.slug = slug
+
+    def __enter__(self) -> "_tag_not_found":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> Literal[False]:
+        if exc_type is None or not issubclass(exc_type, ManagedTemplateTagNotFoundError):
+            return False
+        raise ApiError.not_found(f"No tag with slug '{self.slug}' was found.") from exc
+
+
+class _invalid_tag:  # noqa: N801 - a context manager used as a statement, named like one
+    """Turn unusable tag text into the contract's 400.
+
+    Query validation rejects blank text, so what reaches here is text that is non-empty but
+    has nothing sluggable in it -- ``"!!!"``, ``"---"`` -- which no length or presence check
+    could have caught.
+    """
+
+    def __enter__(self) -> "_invalid_tag":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> Literal[False]:
+        if exc_type is None or not issubclass(exc_type, ManagedTemplateInvalidTagError):
+            return False
+        raise ApiError.bad_request(str(exc)) from exc
+
+
+def describe_missing(template_key: str, version: int | None) -> str:
+    if version is None:
+        return f"No template with key '{template_key}' was found."
+    return f"Template '{template_key}' has no version {version}."
+
+
+def statuses_from(values: Iterable[str]) -> list[ManagedTemplateStatus]:
+    """Parse wire status strings into the library's enum.
+
+    Query validation has already restricted the values to the contract's literal, so an
+    unknown one here would be a bug in this API rather than bad input.
+    """
+    return [ManagedTemplateStatus(value) for value in values]
+
+
+# --- process-wide service ----------------------------------------------------------
+
+_cache_lock = threading.Lock()
+_cached_caller: ServiceCaller | None = None
+
+
+def get_service_caller() -> ServiceCaller:
+    """Build the service once per process and reuse it for every request.
+
+    Failures are not cached: a transient misconfiguration (an unreachable database at
+    boot, say) should be retried on the next request rather than poisoning the process.
+    """
+    global _cached_caller  # noqa: PLW0603
+
+    if _cached_caller is not None:
+        return _cached_caller
+
+    with _cache_lock:
+        if _cached_caller is not None:
+            return _cached_caller
+
+        service = load_template_service(settings.MANAGED_TEMPLATE_SERVICE_FACTORY)
+        _cached_caller = ServiceCaller(service)
+        return _cached_caller
+
+
+def set_service_caller(caller: ServiceCaller | None) -> None:
+    """Replace the cached service. The seam tests inject a fake service through."""
+    global _cached_caller  # noqa: PLW0603
+
+    with _cache_lock:
+        _cached_caller = caller
