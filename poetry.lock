@@ -1571,39 +1571,35 @@ zstd = ["backports-zstd (>=1.0.0)"]
 
 [[package]]
 name = "vintasend"
-version = "2.0.0"
+version = "3.0.0"
 description = "A flexible package for implementing transactional notifications"
 optional = false
-python-versions = ">=3.10,<3.15"
+python-versions = "<3.15,>=3.10"
 groups = ["main"]
-files = []
-develop = true
+files = [
+    {file = "vintasend-3.0.0-py3-none-any.whl", hash = "sha256:5e8a9ce4473f7a744778533e0396aab73aeddc26221420ea9b613ae1b321f016"},
+    {file = "vintasend-3.0.0.tar.gz", hash = "sha256:e69b9e6c2b3e74d51a4334e1a7575ab119c099e01e0af20a5a4be7ce305f8b5d"},
+]
 
 [package.dependencies]
-requests = "^2.34.2"
+requests = ">=2.34.2,<3.0.0"
 typing-extensions = ">=4.10.0"
-
-[package.source]
-type = "directory"
-url = "../.."
 
 [[package]]
 name = "vintasend-managed-templates"
-version = "0.1.0"
+version = "3.0.0"
 description = "Starting point for a new vintasend-* implementation package: one TODO stub per seam, ready to clone."
 optional = false
-python-versions = ">=3.10,<3.15"
+python-versions = "<3.15,>=3.10"
 groups = ["main"]
-files = []
-develop = true
+files = [
+    {file = "vintasend_managed_templates-3.0.0-py3-none-any.whl", hash = "sha256:3443ddfb606c5d825b3b84d56e68f46a4d5cbc067d9c119355437eb013c732d3"},
+    {file = "vintasend_managed_templates-3.0.0.tar.gz", hash = "sha256:da54bbc411baed92ea6616682e75f89e7a208b12c283081e2284da63b9fac1f5"},
+]
 
 [package.dependencies]
 typing-extensions = ">=4.10.0"
-vintasend = {path = "../..", develop = true}
-
-[package.source]
-type = "directory"
-url = "../../implementations/vintasend-managed-templates"
+vintasend = "3.0.0"
 
 [[package]]
 name = "virtualenv"
@@ -1626,5 +1622,5 @@ typing-extensions = {version = ">=4.13.2", markers = "python_version < \"3.11\""
 
 [metadata]
 lock-version = "2.1"
-python-versions = ">=3.10,<3.14"
-content-hash = "7dbd7d42fa8ecfb58dcbedb1fd67279d385a9c7a196790ef6006c1750c161cf8"
+python-versions = ">=3.10,<3.15"
+content-hash = "f962b8740580ac28dc4898538e99e943598a6391550adbc988a98bf20c03645d"
