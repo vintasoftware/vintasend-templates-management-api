@@ -50,11 +50,11 @@ from vintasend_managed_templates.exceptions import (
     ManagedTemplateStatusTransitionError,
     ManagedTemplateTagAlreadyExistsError,
     ManagedTemplateTagNotFoundError,
+    ManagedTemplateUnsupportedOrderingError,
 )
-from vintasend_managed_templates.filters import ManagedTemplateFilter
+from vintasend_managed_templates.filters import ManagedTemplateFilter, ManagedTemplateOrderBy
 from vintasend_managed_templates.managed_template_service import ManagedTemplateService
 
-from .capabilities import get_backend_capabilities
 from .errors import ApiError
 
 
@@ -142,9 +142,7 @@ class ServiceCaller:
         on every request would buy nothing.
         """
         if self._capabilities_cache is None:
-            self._capabilities_cache = get_backend_capabilities(
-                self.service.template_manager_backend
-            )
+            self._capabilities_cache = self.service.get_backend_supported_filter_capabilities()
         return self._capabilities_cache
 
     # --- reads ---------------------------------------------------------------------
@@ -165,18 +163,26 @@ class ServiceCaller:
             return self.service.get_template_versions(template_key)
 
     def get_paginated_filtered_templates(
-        self, filters: ManagedTemplateFilter, page: int, page_size: int
+        self,
+        filters: ManagedTemplateFilter,
+        page: int,
+        page_size: int,
+        order_by: ManagedTemplateOrderBy | None = None,
     ) -> list[ManagedTemplate]:
-        """One page of the templates matching ``filters``.
+        """One page of the templates matching ``filters``, in ``order_by``'s order.
 
         Page numbers pass straight through: ``ManagedTemplateService`` validates
         ``page >= 1`` itself, so the wire's 1-indexing *is* the service's convention.
         There is no per-backend numbering to negotiate the way ``vintasend-api`` has to
         for notification backends, because no template call reaches the backend without
         going through that validation first.
+
+        The route has already refused an order the capability report declines, so the
+        service's own refusal here is the backstop for the two disagreeing -- which would
+        otherwise surface as a 500 on a request that is not the client's fault.
         """
-        with _invalid_filter():
-            return self.service.get_paginated_filtered_templates(filters, page, page_size)
+        with _invalid_filter(), _unsupported_ordering():
+            return self.service.get_paginated_filtered_templates(filters, page, page_size, order_by)
 
     def get_status_history(
         self, template_key: str, version: int | None = None
@@ -419,6 +425,21 @@ class _invalid_filter(_translating):  # noqa: N801
     """
 
     translates = ManagedTemplateInvalidFilterError
+
+    def to_api_error(self, exc: ManagedTemplateError) -> ApiError:
+        return ApiError.bad_request(str(exc))
+
+
+class _unsupported_ordering(_translating):  # noqa: N801
+    """Turn an order the backend cannot apply into the contract's 400.
+
+    ``build_order_by`` reads the same capability report and refuses first, so reaching this
+    means the report and the service disagreed. A 400 either way: the request named an order
+    that cannot be served, which is the client's to fix, and the library's message already
+    names the capability key to ask the report for.
+    """
+
+    translates = ManagedTemplateUnsupportedOrderingError
 
     def to_api_error(self, exc: ManagedTemplateError) -> ApiError:
         return ApiError.bad_request(str(exc))

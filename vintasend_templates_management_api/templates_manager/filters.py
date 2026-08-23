@@ -5,6 +5,9 @@ that cannot do case-insensitive ``includes`` gets an exact match instead, and a 
 backend cannot filter on at all is dropped rather than failing the request. Dropping an
 unsupported filter is the contract's choice; failing the request is not.
 
+Ordering goes the other way and 400s -- see ``build_order_by`` for why the asymmetry is
+deliberate rather than an oversight.
+
 Two naming layers meet in this module and both are deliberate:
 
 * The **wire** uses camelCase everywhere -- query parameters (``templateManagedBackend``)
@@ -26,13 +29,30 @@ from vintasend_managed_templates.filters import (
     DateRange,
     FilterLookup,
     ManagedTemplateFilterFields,
+    ManagedTemplateOrderBy,
     ManagedTemplateStatusFilter,
     StringFieldFilter,
     StringFilterLookup,
 )
 
-from .capabilities import supports
+from .capabilities import order_by_capability_key, supports
+from .errors import ApiError
 from .query import TemplateListQuery
+
+
+# Ascending is the SQL default, and the one a reader assumes when none is named.
+DEFAULT_ORDER_BY_DIRECTION = "asc"
+
+# Wire order-by field -> the Python filter vocabulary's field name. Only the two timestamps
+# differ; the rest are spelled the same on both sides.
+ORDER_BY_FIELD_TO_PYTHON: dict[str, str] = {
+    "key": "key",
+    "name": "name",
+    "version": "version",
+    "status": "status",
+    "createdAt": "created_at",
+    "updatedAt": "updated_at",
+}
 
 
 # Wire query parameter -> the capability key guarding it, and the Python filter field it
@@ -171,3 +191,55 @@ def cast_filter(raw: dict[str, FilterLookup]) -> ManagedTemplateFilterFields:
     lookup shapes the vocabulary allows; only the key-to-value pairing is asserted here.
     """
     return cast("ManagedTemplateFilterFields", raw)
+
+
+def build_order_by(
+    query: TemplateListQuery, capabilities: dict[str, bool]
+) -> ManagedTemplateOrderBy | None:
+    """Resolve ordering, refusing what the backend has said it cannot apply.
+
+    This is the one negotiation on this endpoint that fails the request instead of quietly
+    doing less, and the asymmetry with the filters above is the point rather than an
+    inconsistency:
+
+    * A dropped **filter** returns more rows than were asked for. The client can see that --
+      the extra rows are right there in the response.
+    * A dropped **order** returns exactly the rows that were asked for, in an arbitrary
+      sequence. Nothing in the response says so. A client renders that page under a
+      highlighted "sorted by name" column header and shows a sort that never happened.
+
+    ``GET /capabilities`` publishes the ``orderBy.*`` keys, so a client builds its sortable
+    columns from the report and never provokes this.
+
+    param query: TemplateListQuery
+    param capabilities: dict[str, bool] -- the merged report, not a backend's raw one.
+    return: ManagedTemplateOrderBy | None -- None asks for the backend's own order.
+    raises ApiError: 400 if the field is one this backend declares it cannot order by, or if
+        a direction arrived with no field to apply it to.
+    """
+    if query.orderByField is None:
+        # A direction on its own has nothing to order, and ignoring it looks exactly like a
+        # backend that cannot sort -- which hides the client bug instead of reporting it.
+        if query.orderByDirection is not None:
+            raise ApiError.bad_request(
+                "orderByDirection was given without orderByField, so there is nothing to order by.",
+                {"orderByDirection": query.orderByDirection},
+            )
+        return None
+
+    field = ORDER_BY_FIELD_TO_PYTHON[query.orderByField]
+    capability = order_by_capability_key(field)
+    if not supports(capabilities, capability):
+        raise ApiError.bad_request(
+            f"The configured template backend cannot order by '{query.orderByField}'. "
+            f"GET /capabilities lists the fields it can order by.",
+            {"orderByField": query.orderByField, "capability": capability},
+        )
+
+    order_by: dict[str, str] = {
+        "field": field,
+        "direction": query.orderByDirection or DEFAULT_ORDER_BY_DIRECTION,
+    }
+    # Both values come from closed sets -- the field from the map above, the direction from
+    # the contract's asc/desc literal -- so this narrowing is safe.
+    return cast("ManagedTemplateOrderBy", order_by)

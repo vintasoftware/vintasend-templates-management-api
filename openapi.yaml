@@ -27,12 +27,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiErrorResponse'
-      description: 'Which filters the configured template backend can honour.
+      description: 'Which filters and orders the configured template backend can honour.
 
 
-        Note there are no ``orderBy.*`` keys: the template-manager seam takes no ordering
+        ``orderBy.*`` keys report which fields ``GET /templates`` can sort by. They
+        default
 
-        argument, so the list endpoint offers no ordering to negotiate. See ``capabilities.py``.'
+        to false, so a backend that cannot sort reports nothing orderable and a client
+        should
+
+        offer no sortable columns. See ``capabilities.py``.'
       tags:
       - system
       security:
@@ -187,6 +191,32 @@ paths:
           - type: boolean
           - type: 'null'
           title: Isabstract
+        required: false
+      - in: query
+        name: orderByField
+        schema:
+          anyOf:
+          - enum:
+            - key
+            - name
+            - version
+            - status
+            - createdAt
+            - updatedAt
+            type: string
+          - type: 'null'
+          title: Orderbyfield
+        required: false
+      - in: query
+        name: orderByDirection
+        schema:
+          anyOf:
+          - enum:
+            - asc
+            - desc
+            type: string
+          - type: 'null'
+          title: Orderbydirection
         required: false
       responses:
         '200':
@@ -1525,8 +1555,16 @@ components:
         key instead of one per version.
 
 
-        There is no ordering parameter, deliberately -- see ``capabilities.py`` for
-        why.'
+        ``orderByField`` and ``orderByDirection`` have no default: most backends can
+        order by
+
+        nothing, so a default would make the common listing a 400 against them. Omitted
+        asks for
+
+        the backend own order. An order the backend cannot apply is a 400 rather than
+        a silent
+
+        drop -- unlike a dropped filter, a dropped order leaves no trace in the rows.'
       properties:
         page:
           default: 1
@@ -1626,6 +1664,26 @@ components:
           - type: boolean
           - type: 'null'
           title: Isabstract
+        orderByField:
+          anyOf:
+          - enum:
+            - key
+            - name
+            - version
+            - status
+            - createdAt
+            - updatedAt
+            type: string
+          - type: 'null'
+          title: Orderbyfield
+        orderByDirection:
+          anyOf:
+          - enum:
+            - asc
+            - desc
+            type: string
+          - type: 'null'
+          title: Orderbydirection
       title: TemplateListQuery
       type: object
     ManagedTemplateOut:

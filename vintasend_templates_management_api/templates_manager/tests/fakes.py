@@ -15,7 +15,7 @@ import dataclasses
 import datetime
 import itertools
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from vintasend.services.notification_template_renderers.base import (
     NotificationSendInput,
@@ -49,8 +49,12 @@ from vintasend_managed_templates.exceptions import (
     ManagedTemplateTagNotFoundError,
 )
 from vintasend_managed_templates.filters import (
+    MANAGED_TEMPLATE_ORDER_BY_FIELDS,
     ManagedTemplateFilter,
+    ManagedTemplateOrderBy,
     is_field_filter,
+    order_by_capability_key,
+    sort_templates,
 )
 from vintasend_managed_templates.managed_template_renderer import ManagedTemplateRenderer
 from vintasend_managed_templates.tags import next_available_slug, slugify_tag
@@ -74,8 +78,10 @@ FIXED_NOW = datetime.datetime(2024, 1, 15, 9, 0, tzinfo=datetime.timezone.utc)
 class InMemoryTemplateManagerBackend(BaseTemplateManagerBackend):
     """A dict-backed template store with just enough filtering to exercise the API.
 
-    Ordering is insertion order throughout, which is the honest thing for a backend with no
-    ordering parameter to take -- see ``capabilities.py``.
+    It reads a complete set into memory before paging, so it can honour every order the
+    vocabulary defines and declares all six ``orderBy.*`` keys. That declaration is not free:
+    the keys default to False, so a backend that can sort has to say so. Pass ``capabilities``
+    to stand in for one that cannot.
     """
 
     # `capabilities` is typed loosely on purpose: one test reports a truthy non-boolean to
@@ -87,12 +93,15 @@ class InMemoryTemplateManagerBackend(BaseTemplateManagerBackend):
         # status change is visible through every template carrying the tag.
         self.tags: dict[str, ManagedTemplateTag] = {}
         self._ids = itertools.count(1)
-        # `BaseTemplateManagerBackend` declares no capability report, so the default this
-        # suite exercises is a backend with no such attribute at all. One is grafted on
-        # only when a test asks for it -- defining the method on the class and raising
-        # inside it would not model absence, since `getattr` would still find it.
-        if capabilities is not None:
-            self.get_filter_capabilities = lambda: capabilities
+        # Sorting is declared rather than assumed: every `orderBy.*` key defaults to False,
+        # so this backend reports all six to make the list route's ordering reachable. A test
+        # passing `capabilities` replaces the whole report, which is how it stands in for a
+        # backend that cannot sort at all.
+        self.capabilities: dict[str, object] = (
+            {order_by_capability_key(field): True for field in MANAGED_TEMPLATE_ORDER_BY_FIELDS}
+            if capabilities is None
+            else capabilities
+        )
         # Records what the service actually asked for, so a test can assert on the call and
         # not only on the response.
         self.calls: list[tuple[str, tuple[object, ...]]] = []
@@ -342,14 +351,31 @@ class InMemoryTemplateManagerBackend(BaseTemplateManagerBackend):
         current = current_versions(self.templates)
         return [template for template in self.templates if matches(template, filters, current)]
 
-    def get_paginated_templates(self, page: int, page_size: int) -> Iterable[ManagedTemplate]:
-        return _page(list(self.templates), page, page_size)
+    def get_filter_capabilities(self) -> dict[str, bool]:
+        # `self.capabilities` is typed loosely so one test can report a truthy non-boolean
+        # and prove the service coerces it. The seam types this `dict[str, bool]`, so the
+        # narrowing happens here rather than by widening the seam for a test.
+        return cast("dict[str, bool]", dict(self.capabilities))
+
+    def get_paginated_templates(
+        self, page: int, page_size: int, order_by: ManagedTemplateOrderBy | None = None
+    ) -> Iterable[ManagedTemplate]:
+        return _page(sort_templates(self.templates, order_by), page, page_size)
 
     def get_paginated_filtered_templates(
-        self, filters: ManagedTemplateFilter, page: int, page_size: int
+        self,
+        filters: ManagedTemplateFilter,
+        page: int,
+        page_size: int,
+        order_by: ManagedTemplateOrderBy | None = None,
     ) -> Iterable[ManagedTemplate]:
-        self.calls.append(("get_paginated_filtered_templates", (filters, page, page_size)))
-        return _page(list(self.get_filtered_templates(filters)), page, page_size)
+        self.calls.append(
+            ("get_paginated_filtered_templates", (filters, page, page_size, order_by))
+        )
+        # Sorted before paging, never after: a page sorted after it was chosen orders rows
+        # within the page while the rows chosen for it came back in insertion order.
+        matched = sort_templates(self.get_filtered_templates(filters), order_by)
+        return _page(matched, page, page_size)
 
     # --- helpers -------------------------------------------------------------------
 

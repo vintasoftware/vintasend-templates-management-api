@@ -14,7 +14,7 @@ from ninja import Field, Schema
 
 from pydantic import field_validator
 
-from .contract import TagStatus, TemplateStatus
+from .contract import TagStatus, TemplateOrderByField, TemplateOrderDirection, TemplateStatus
 
 
 DEFAULT_PAGE = 1
@@ -105,7 +105,10 @@ class TemplateListQuery(PaginationQuery):
     and the one whose default changes what a bare ``GET /templates`` returns: one row per
     key instead of one per version.
 
-    There is no ordering parameter, deliberately -- see ``capabilities.py`` for why.
+    ``orderByField`` and ``orderByDirection`` have no default: most backends can order by
+    nothing, so a default would make the common listing a 400 against them. Omitted asks for
+    the backend own order. An order the backend cannot apply is a 400 rather than a silent
+    drop -- unlike a dropped filter, a dropped order leaves no trace in the rows.
     """
 
     key: str | None = None
@@ -140,6 +143,13 @@ class TemplateListQuery(PaginationQuery):
     # `true` what a picker choosing a base to extend asks for. Answered from the stored
     # `isAbstract` flag rather than by parsing every row -- see `capabilities.py`.
     isAbstract: bool | None = None
+    # Declared last so the generated document lists them after the filters, and with no
+    # default so an omitted parameter reaches ``build_order_by`` as "no order asked for"
+    # rather than as a field most backends would have to refuse.
+    orderByField: TemplateOrderByField | None = None
+    # Only meaningful alongside a field. Sent on its own it is a 400, because ignoring it
+    # looks exactly like a backend that cannot sort, which hides the client bug.
+    orderByDirection: TemplateOrderDirection | None = None
 
     @field_validator("key", "name", "description", "templateManagedBackend")
     @classmethod

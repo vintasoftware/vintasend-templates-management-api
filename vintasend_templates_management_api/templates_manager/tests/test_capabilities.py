@@ -5,13 +5,21 @@ from collections.abc import Callable
 from vintasend_managed_templates.constants import ManagedTemplateStatus
 from vintasend_managed_templates.managed_template_service import ManagedTemplateService
 
-from ..capabilities import DEFAULT_TEMPLATE_BACKEND_FILTER_CAPABILITIES
+from ..capabilities import (
+    DEFAULT_TEMPLATE_BACKEND_FILTER_CAPABILITIES,
+    MANAGED_TEMPLATE_ORDER_BY_FIELDS,
+    order_by_capability_key,
+)
 from .conftest import ReadRequest
 from .fakes import InMemoryTemplateManagerBackend
 
 
-def test_a_backend_with_no_report_is_fully_capable(get: ReadRequest) -> None:
-    """`BaseTemplateManagerBackend` declares no capability method; saying nothing is fine."""
+def test_a_backend_with_no_report_is_fully_capable(
+    get: ReadRequest, install_service: Callable[..., ManagedTemplateService]
+) -> None:
+    """Saying nothing is fine: every filter reads as supported, every order as unsupported."""
+    install_service(template_backend=InMemoryTemplateManagerBackend(capabilities={}))
+
     response = get("/api/v1/capabilities")
 
     assert response.status_code == 200
@@ -44,27 +52,34 @@ def test_non_boolean_values_are_coerced(
     assert get("/api/v1/capabilities").json()["data"]["fields.key"] is False
 
 
-def test_no_ordering_capability_is_published(get: ReadRequest) -> None:
-    """The seam takes no ordering argument, so there is no ordering to negotiate."""
+def test_an_ordering_capability_is_published_for_every_orderable_field(
+    get: ReadRequest,
+) -> None:
+    """A field the API accepts but the report never mentions is one a client cannot discover.
+
+    It would also fall to the False default and 400 on every request, which is a limitation
+    with nowhere to read it from.
+    """
     data = get("/api/v1/capabilities").json()["data"]
 
-    assert not [key for key in data if key.startswith("orderBy.")]
+    for field in MANAGED_TEMPLATE_ORDER_BY_FIELDS:
+        assert order_by_capability_key(field) in data
 
 
-def test_the_list_route_offers_no_ordering_parameter(
-    get: ReadRequest, backend: InMemoryTemplateManagerBackend
+def test_a_backend_that_says_nothing_reports_nothing_orderable(
+    get: ReadRequest, install_service: Callable[..., ManagedTemplateService]
 ) -> None:
-    """Sorting one page would be right on page 1 and wrong after it, silently.
+    """The one place a missing key does *not* mean supported, and the reason it does not.
 
-    Ninja ignores unrecognised query parameters, so the assertion that matters is that
-    asking for an order changes nothing about what comes back.
+    Ordering is newer vocabulary than the filters. A True default would have every backend
+    written before it existed claim an order it silently ignores.
     """
-    backend.add(key="b")
-    backend.add(key="a")
+    install_service(template_backend=InMemoryTemplateManagerBackend(capabilities={}))
 
-    response = get("/api/v1/templates?orderByField=createdAt&orderByDirection=asc")
+    data = get("/api/v1/capabilities").json()["data"]
 
-    assert [row["key"] for row in response.json()["data"]] == ["b", "a"]
+    assert [key for key in data if key.startswith("orderBy.")]
+    assert not [key for key, value in data.items() if key.startswith("orderBy.") and value]
 
 
 # --- filter negotiation --------------------------------------------------------------
@@ -144,15 +159,19 @@ def test_a_backend_that_cannot_collapse_versions_gets_every_version(
 def test_capabilities_are_read_once_per_process(
     get: ReadRequest, install_service: Callable[..., ManagedTemplateService]
 ) -> None:
-    """A backend's capabilities are static, so re-asking every request would buy nothing."""
+    """A backend's capabilities are static, so re-asking every request would buy nothing.
+
+    It matters more than it used to: the report is now read before every filtered read, to
+    prune what the backend cannot answer, rather than only when a client asks for it.
+    """
     calls: list[int] = []
 
-    def counting_report() -> dict[str, object]:
-        calls.append(1)
-        return {}
+    class CountingBackend(InMemoryTemplateManagerBackend):
+        def get_filter_capabilities(self) -> dict[str, bool]:
+            calls.append(1)
+            return {}
 
-    backend = InMemoryTemplateManagerBackend()
-    backend.get_filter_capabilities = counting_report
+    backend = CountingBackend()
     install_service(template_backend=backend)
 
     get("/api/v1/capabilities")

@@ -40,7 +40,7 @@ from .contract import (
     TemplateStatusHistoryOut,
 )
 from .errors import STATUS_BY_CODE, ApiError
-from .filters import build_backend_filter
+from .filters import build_backend_filter, build_order_by
 from .preview import build_template_preview
 from .query import (
     CreateTagBody,
@@ -263,10 +263,11 @@ def _change_status(
     tags=["system"],
 )
 def get_capabilities(request: HttpRequest) -> DataResponse[dict[str, bool]]:
-    """Which filters the configured template backend can honour.
+    """Which filters and orders the configured template backend can honour.
 
-    Note there are no ``orderBy.*`` keys: the template-manager seam takes no ordering
-    argument, so the list endpoint offers no ordering to negotiate. See ``capabilities.py``.
+    ``orderBy.*`` keys report which fields ``GET /templates`` can sort by. They default
+    to false, so a backend that cannot sort reports nothing orderable and a client should
+    offer no sortable columns. See ``capabilities.py``.
     """
     return DataResponse[dict[str, bool]](data=get_service_caller().get_capabilities())
 
@@ -292,11 +293,19 @@ def list_templates(request: HttpRequest, query: Query[TemplateListQuery]) -> Tem
     backend that cannot answer the filter has it dropped like any other unsupported one, and
     then returns every version too.
     """
+    # Ordering is documented on ``TemplateListQuery`` rather than here, so the generated
+    # operation description stays byte-identical to the TypeScript sibling's copy of
+    # ``openapi.yaml``. The short version: neither ordering parameter has a default, because
+    # every ``orderBy.*`` capability defaults to false and a default field would make this
+    # listing a 400 against most backends. Unlike a filter, an order the backend cannot apply
+    # is refused rather than dropped -- see ``filters.build_order_by``.
     service = get_service_caller()
+    capabilities = service.get_capabilities()
     templates = service.get_paginated_filtered_templates(
-        build_backend_filter(query, service.get_capabilities()),
+        build_backend_filter(query, capabilities),
         query.page,
         query.pageSize,
+        build_order_by(query, capabilities),
     )
 
     data = [_out(service, template) for template in templates]

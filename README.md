@@ -91,6 +91,11 @@ Conventions a client can rely on:
 - **`version` omitted means "the latest"** everywhere except `status-history`, where it
   means "every version" — that endpoint forwards it to the backend, which returns the
   whole key's trail.
+- **`GET /templates` orders only when asked, and only by what the backend can sort.**
+  `orderByField` takes `key`, `name`, `version`, `status`, `createdAt` or `updatedAt`;
+  `orderByDirection` takes `asc` or `desc` and defaults to `asc`. Neither has a default
+  field, so omitting them asks for the backend's own order. See
+  [Ordering](#ordering-the-listing).
 - Every template payload carries `isAbstract`: whether that version is a base to build on rather than one to send. See [Composition](#composition-templates-built-on-templates).
 - Every template payload carries `allowedTransitions`: the statuses that version can move
   to right now, as the *configured service* answers it. A UI enables buttons from that
@@ -155,6 +160,47 @@ has asked to list *only* superseded versions.
 The narrowing happens in the store, so pagination still counts what the backend counted. A
 backend declining `fields.mostRecentActiveVersion` has the filter dropped like any other
 unsupported one, and its listing shows every version.
+
+### Ordering the listing
+
+```
+GET /api/v1/templates?orderByField=name&orderByDirection=asc
+```
+
+`orderByField` accepts `key`, `name`, `version`, `status`, `createdAt` and `updatedAt` —
+each a scalar the backend already stores per row, so a store can answer it from an index.
+Tags are absent because ordering by a many-to-many has no single value to compare, and
+`mostRecentActiveVersion` because it is a filter rather than a field.
+
+`orderByDirection` is `asc` or `desc`, and defaults to `asc` when a field is given without
+one. Sent on its own it is a `400`: there is nothing to order by, and ignoring it would
+look exactly like a backend that cannot sort.
+
+**Ask `/capabilities` first.** Every `orderBy.*` key defaults to `false`, so a backend that
+has not declared a field cannot sort by it and the request is a `400` naming the key:
+
+```jsonc
+// GET /api/v1/capabilities
+{
+  "data": {
+    "orderBy.key": true,
+    "orderBy.name": true,
+    "orderBy.version": true,
+    "orderBy.status": false,   // this backend cannot sort by status
+    "orderBy.createdAt": true,
+    "orderBy.updatedAt": true
+    // ... plus the fields.*, logical.* and stringLookups.* keys
+  }
+}
+```
+
+Build the sortable columns of a UI from that report and the `400` never happens. Unlike an
+unsupported *filter*, which is dropped so the request still succeeds, an unsupported
+*order* is refused — see [Design notes](#design-notes) for why the two differ.
+
+The order is applied by the backend to the whole result set before a page is chosen, so
+page 2 of an ordered listing is the second page of that order rather than the backend's
+own second page re-sorted.
 
 ### Composition: templates built on templates
 
@@ -350,30 +396,43 @@ noticing.
 Worth knowing if you are implementing this contract elsewhere, or wondering why something
 is missing.
 
-**There is no ordering.** `BaseTemplateManagerBackend.get_paginated_filtered_templates`
-takes `filters`, `page` and `page_size` and no ordering argument, so an order can never
-reach the store. Sorting the page the API received would order rows *within* a page while
-the rows chosen *for* that page stayed in the backend's own order — right on page 1 and
-wrong after it, with nothing raised. So the list endpoint accepts no ordering parameter
-and `/capabilities` publishes no `orderBy.*` keys. The two places an order is guaranteed
-are the ones the service sorts itself over a complete result set: version listings and
-status history, both unpaginated for exactly that reason.
+**Filters are dropped; orders are refused.** Both are negotiated against the same
+capability report, and they resolve in opposite directions. That is deliberate:
 
-`vintasend_managed_templates.filters` does define `ManagedTemplateOrderBy`; it is unused
-by the seam. If a release threads it through, add the capability keys and the query
-parameters together.
+| | Unsupported filter | Unsupported order |
+|---|---|---|
+| What happens | dropped, request succeeds | `400 BAD_REQUEST` |
+| If it were ignored | more rows than asked for | the same rows, arbitrary sequence |
+| Can the client tell? | yes, from the rows | **no** |
+
+A client rendering an unordered page under a highlighted "sorted by name" column header is
+displaying a sort that never happened, and nothing in the response says so. Sending
+`orderByDirection` without `orderByField` is a 400 for the same reason — ignoring it looks
+exactly like a backend that cannot sort, which hides the client bug.
+
+**Neither ordering parameter has a default.** Every `orderBy.*` capability defaults to
+`false`, so a default field would make the ordinary listing a 400 against most backends.
+Omitted asks for the backend's own order — which is what an unordered listing has always
+returned. Note this differs from `vintasend-api`, which *does* default its order; there,
+every notification backend can sort.
+
+Read `GET /api/v1/capabilities` and offer only the columns it reports as sortable.
 
 **Pagination needs no negotiation.** `vintasend-api` reads `pagination.oneIndexed` off
 each backend because notification backends genuinely differ. Here `ManagedTemplateService`
 validates `page >= 1` itself and no call reaches a backend without passing through that
 validation, so the wire's 1-indexing *is* the service's convention.
 
-**Capabilities are supplied, not required.** `BaseTemplateManagerBackend` declares no
-`get_filter_capabilities`, unlike `BaseNotificationBackend`. Rather than add an abstract
-method to a published seam, this API supplies the default map and reads a backend's report
-only if it happens to expose one. A backend that adds the method later is picked up with
-no change here. As with notifications, a backend declares only what it *cannot* do and its
-report is merged over an all-`True` default.
+**Capabilities are declared, not required.** `BaseTemplateManagerBackend.get_filter_capabilities`
+is concrete and returns `{}`, so a backend that says nothing keeps working. As with
+notifications, a backend declares only what it *cannot* do, and `ManagedTemplateService`
+merges its report over the library's default.
+
+The `orderBy.*` keys are the one exception to "a missing key means supported": they
+default to `false`. Ordering is newer vocabulary than the filters, so a `true` default
+would have every backend written before it existed claim an order it silently ignores. A
+backend that can sort declares it — and should verify each claim by *running* the sort, not
+by reading its store's documentation.
 
 **Composition is reported, not enforced on write.** A template that extends a base which
 does not exist yet is stored without complaint: a UI drafting a set of templates would

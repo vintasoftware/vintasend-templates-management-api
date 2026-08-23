@@ -39,14 +39,18 @@ TagStatus = Literal["active", "archived"]
 # How a multi-tag filter combines. ``all`` requires every tag, ``any`` at least one.
 TagMatchMode = Literal["all", "any"]
 
-# Which field a list query may order by.
+# Which field a list query may order by, in the wire's camelCase.
 #
-# Deliberately narrow: ``BaseTemplateManagerBackend.get_paginated_filtered_templates``
-# takes no ordering argument, so ordering cannot be pushed down to the store. See
-# ``capabilities.py`` -- this API declines ordering rather than sorting a single page
-# in process, which would produce an order that is correct within a page and wrong
-# across pages, silently.
-TemplateOrderByField = Literal["createdAt", "updatedAt"]
+# Deliberately narrow: each one is a scalar the backend already stores per row, so a store
+# can answer it from an index rather than with a computed sort. Tags are absent because
+# ordering by a many-to-many has no single value to compare, and ``mostRecentActiveVersion``
+# because it is a filter rather than a field.
+#
+# This literal is one of three places the same six names appear -- the others are the enum in
+# ``openapi.yaml`` and ``MANAGED_TEMPLATE_ORDER_BY_FIELDS`` in the library. ``test_openapi.py``
+# pins all three against each other, so a field added to one and forgotten in the others fails
+# a test rather than a client.
+TemplateOrderByField = Literal["key", "name", "version", "status", "createdAt", "updatedAt"]
 
 TemplateOrderDirection = Literal["asc", "desc"]
 

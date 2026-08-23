@@ -2,7 +2,7 @@
 
 from io import StringIO
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 from django.conf import settings
 from django.core.management import call_command
@@ -186,3 +186,86 @@ def test_the_merge_accepts_an_identical_definition() -> None:
     _merge(target, {"Shared": {"type": "object"}}, "schema")
 
     assert target == {"Shared": {"type": "object"}}
+
+
+# --- the ordering vocabulary ---------------------------------------------------------
+#
+# The same six names live in three places: the enum in `openapi.yaml`, the literal this
+# server validates against, and the library's own list of orderable fields. A field added to
+# one and forgotten in the others is a client discovering it by getting a 400 from a
+# parameter the spec says is valid, so it is pinned here instead.
+
+
+def declared_enum(parameter_name: str) -> list[str]:
+    """The enum a query parameter declares in the committed `openapi.yaml`.
+
+    Read off the file on disk rather than the in-memory schema: the file is what a client
+    generates from, and it is the copy shared with the TypeScript implementation.
+    """
+    document = yaml.safe_load((Path(settings.BASE_DIR) / DEFAULT_OUTPUT).read_text())
+    operation = document["paths"][f"{API_BASE_PATH}/templates"]["get"]
+
+    for parameter in operation["parameters"]:
+        if parameter["name"] == parameter_name:
+            for alternative in parameter["schema"]["anyOf"]:
+                if "enum" in alternative:
+                    return list(alternative["enum"])
+            raise AssertionError(f"{parameter_name} declares no enum in {DEFAULT_OUTPUT}")
+
+    raise AssertionError(f"{parameter_name} is not a parameter of GET /templates")
+
+
+def test_the_spec_the_schema_and_the_library_name_the_same_orderable_fields() -> None:
+    from vintasend_managed_templates.filters import MANAGED_TEMPLATE_ORDER_BY_FIELDS
+
+    from ..contract import TemplateOrderByField
+    from ..filters import ORDER_BY_FIELD_TO_PYTHON
+
+    in_spec = sorted(declared_enum("orderByField"))
+    in_schema = sorted(get_args(TemplateOrderByField))
+    # The wire spells two of the six differently, so the library's list is compared through
+    # the map that translates them -- which is itself a fourth place they could drift.
+    in_library = sorted(ORDER_BY_FIELD_TO_PYTHON[wire] for wire in in_spec)
+
+    assert in_spec == in_schema
+    assert in_library == sorted(MANAGED_TEMPLATE_ORDER_BY_FIELDS)
+
+
+def test_the_spec_and_the_schema_name_the_same_directions() -> None:
+    from ..contract import TemplateOrderDirection
+
+    assert sorted(declared_enum("orderByDirection")) == sorted(get_args(TemplateOrderDirection))
+
+
+def test_a_capability_key_is_published_for_every_field_the_spec_accepts() -> None:
+    """A field the API accepts but the report never mentions is one a client cannot discover.
+
+    It would also fall to the ``False`` default and 400 on every request -- a limitation with
+    nowhere to read it from.
+    """
+    from vintasend_managed_templates.filters import (
+        DEFAULT_TEMPLATE_BACKEND_FILTER_CAPABILITIES,
+        order_by_capability_key,
+    )
+
+    from ..filters import ORDER_BY_FIELD_TO_PYTHON
+
+    for wire in declared_enum("orderByField"):
+        key = order_by_capability_key(ORDER_BY_FIELD_TO_PYTHON[wire])
+        assert key in DEFAULT_TEMPLATE_BACKEND_FILTER_CAPABILITIES
+
+
+def test_the_drift_guard_fails_on_a_field_missing_from_the_spec(tmp_path: Path) -> None:
+    """The guard above is only worth having if it fails, so the failure is exercised too.
+
+    Rather than trusting that deleting a value from the enum by hand would be caught, this
+    deletes one and asserts the same comparison rejects it.
+    """
+    from vintasend_managed_templates.filters import MANAGED_TEMPLATE_ORDER_BY_FIELDS
+
+    from ..filters import ORDER_BY_FIELD_TO_PYTHON
+
+    in_spec = sorted(field for field in declared_enum("orderByField") if field != "version")
+    in_library = sorted(ORDER_BY_FIELD_TO_PYTHON[wire] for wire in in_spec)
+
+    assert in_library != sorted(MANAGED_TEMPLATE_ORDER_BY_FIELDS)
