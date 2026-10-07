@@ -100,6 +100,18 @@ Conventions a client can rely on:
 - Every template payload carries `allowedTransitions`: the statuses that version can move
   to right now, as the *configured service* answers it. A UI enables buttons from that
   rather than reimplementing the lifecycle or discovering it by catching a 409.
+- **A send renders the newest `active` version, never a draft.** Reads here are the editing
+  view: `version` omitted returns the newest version whatever its status, and a preview with no
+  `version` renders that. When several versions are active, an unpinned send renders the
+  highest-numbered one, so activating an older version does not change what is sent.
+- **Only a never-published version can be deleted.** A version that was ever activated is
+  refused with a 409 `CONFLICT`: a notification may be pinned to it, and its status history
+  records who published it. Archive it instead. That applies to `DELETE /templates/{key}` with no
+  `version` too, which resolves to the latest version, so prefer naming the version you mean.
+  Status history is never deleted.
+- **`changedBy` in a status body is only a fallback.** A host that knows who is calling sets
+  `MANAGED_TEMPLATE_ACTOR_RESOLVER` (see [Attribution](#attribution)), and its answer replaces
+  whatever the body says.
 - Timestamps are ISO-8601 UTC strings, `null` when unset — never absent.
 - Errors always use the envelope `{ "error": { "code", "message", "details"? } }`.
 
@@ -291,11 +303,21 @@ one, and its listing shows both.
 | `BAD_REQUEST` | 400 | Invalid input; `details.issues` names the fields. |
 | `UNAUTHORIZED` | 401 | Missing or wrong API key. |
 | `NOT_FOUND` | 404 | No such template key, or no such version of it. |
-| `CONFLICT` | 409 | The request cannot be applied in the current state. |
+| `CONFLICT` | 409 | The request cannot be applied in the current state: a tag whose text already slugs onto an existing one, or deleting a published version. |
 | `INVALID_STATUS_TRANSITION` | 409 | The lifecycle does not allow that status change. |
 | `PREVIEW_UNAVAILABLE` | 409 | The template could not be rendered; the message says why. |
 | `TEMPLATE_COMPOSITION_ERROR` | 409 | The template could not be assembled — a missing base, a loop, a malformed tag. The message names the chain. |
-| `INTERNAL_ERROR` | 500 | Unexpected failure. Logged in full, reported generically. |
+| `INTERNAL_ERROR` | 500 | Unexpected failure. Reported generically, with an `X-Request-Id` header; logged as one redacted line. |
+
+An unexpected error is logged as one line: its class name, the request id, the method and the
+route pattern (`api/v1/templates/<key>/preview`, not the path). Its message, its traceback, the
+request body and a preview's context are never logged: errors from the template store or the
+template engine can carry template content and context values, which in the applications this
+API serves can be health data. Django's own `django.request` record for the 500 is suppressed
+too, since it would repeat the concrete path and attach the request object. The request id is
+the client's `X-Request-Id` when it matches `[A-Za-z0-9._-]{1,128}`, and a fresh UUID otherwise,
+so a client cannot forge a log line through it. Set `MANAGED_TEMPLATE_UNHANDLED_ERROR_HANDLER` to send errors somewhere with its own
+scrubbing instead (see [Unexpected errors](#unexpected-errors)).
 
 ## Authentication
 
@@ -350,7 +372,44 @@ called once per process and its result reused, so it must be safe to call once a
 service it returns must be safe to share across requests.
 
 Only the preview endpoint uses the renderer, so a deployment that never previews can pass
-one that raises.
+one that raises. A preview never uses a fallback registered on the renderer: it renders a stored
+version or reports a 404.
+
+### Attribution
+
+Status routes record a `changedBy` in the audit trail. By default it comes from the request
+body, which is only safe when everyone holding the API key is trusted to attribute honestly.
+When the host knows who is calling (a gateway header, a session it validated), point
+`MANAGED_TEMPLATE_ACTOR_RESOLVER` at a callable that answers it:
+
+```python
+# vintasend_templates_management_api/vintasend_config.py
+def resolve_actor(request) -> str | None:
+    return request.headers.get("X-Authenticated-User")   # set by your trusted proxy
+```
+
+```bash
+MANAGED_TEMPLATE_ACTOR_RESOLVER=vintasend_templates_management_api.vintasend_config.resolve_actor
+```
+
+When it is set, its answer is what `/status`, `/activate`, `/deactivate` and `/archive` all
+record, and any `changedBy` in the body is ignored. `None` records the change as unattributed.
+The resolver may be `async`. The body field stays optional in the contract, so existing clients
+keep working. In `settings.py` you can also assign the callable itself rather than a dotted path.
+
+### Unexpected errors
+
+`MANAGED_TEMPLATE_UNHANDLED_ERROR_HANDLER` names a callable `(exc, request, request_id) -> None`
+that receives every error the API does not map to a contract error, in place of the default
+one-line log. It may be `async`. It gets the exception itself, so keeping health data out of
+wherever it sends it is your responsibility. If it raises, the default line is logged instead
+and what it raised is not; the client gets the same generic 500 with the same `X-Request-Id`
+either way.
+
+```python
+def report_unhandled_error(exc, request, request_id):
+    error_tracker.capture(exc, tags={"request_id": request_id})   # with its own scrubbing
+```
 
 The lifecycle is your service's, not this API's. A `ManagedTemplateService` subclass with
 its own `ALLOWED_STATUS_TRANSITIONS`, or one built with
@@ -364,12 +423,16 @@ and enforced through the same 409.
 | `VINTASEND_API_KEY` | yes | Shared secret clients must send as a bearer token. |
 | `MANAGED_TEMPLATE_SERVICE_FACTORY` | yes | Dotted path to the callable building your service. |
 | `VINTASEND_API_CORS_ORIGINS` | no | Comma-separated browser origins allowed to call the API. |
+| `MANAGED_TEMPLATE_ACTOR_RESOLVER` | no | Dotted path to `(request) -> str \| None`, who made a status change. See [Attribution](#attribution). |
+| `MANAGED_TEMPLATE_UNHANDLED_ERROR_HANDLER` | no | Dotted path to `(exc, request, request_id) -> None`. See [Unexpected errors](#unexpected-errors). |
 | `DJANGO_SECRET_KEY` | no | Django requires one; this API signs nothing. |
 | `DJANGO_DEBUG` / `DJANGO_ALLOWED_HOSTS` / `DJANGO_LOG_LEVEL` | no | Standard Django knobs. |
 | `DJANGO_DB_*` | no | Only needed by backends that resolve their models through Django. |
 
 The first two are enforced by a Django system check, so a deployment missing either fails
-on `manage.py check` and on `runserver` rather than on the first request. Run
+on `manage.py check` and on `runserver` rather than on the first request. The two hooks are
+checked the same way: a dotted path that does not import, or names something that is not
+callable, fails the check. Run
 `manage.py check` in your release step if you serve with gunicorn.
 
 ## Development

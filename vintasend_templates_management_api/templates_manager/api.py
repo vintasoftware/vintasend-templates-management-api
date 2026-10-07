@@ -41,6 +41,7 @@ from .contract import (
 )
 from .errors import STATUS_BY_CODE, ApiError
 from .filters import build_backend_filter, build_order_by
+from .hooks import REQUEST_ID_HEADER, report_unhandled_error, request_id_for, resolve_changed_by
 from .preview import build_template_preview
 from .query import (
     CreateTagBody,
@@ -84,13 +85,13 @@ WRITE_ERRORS: dict[int, type[Schema]] = {
     401: ApiErrorResponse,
     404: ApiErrorResponse,
 }
+# 409 here is CONFLICT: the version was published, so the library refuses to delete it.
+DELETE_ERRORS: dict[int, type[Schema]] = {**LOOKUP_ERRORS, 409: ApiErrorResponse}
 # 409 covers both CONFLICT and INVALID_STATUS_TRANSITION; the body's `code` says which.
 STATUS_ERRORS: dict[int, type[Schema]] = {**WRITE_ERRORS, 409: ApiErrorResponse}
 PREVIEW_ERRORS: dict[int, type[Schema]] = {**WRITE_ERRORS, 409: ApiErrorResponse}
 # 409 here is TEMPLATE_COMPOSITION_ERROR: the template exists and cannot be assembled.
 COMPOSITION_ERRORS: dict[int, type[Schema]] = {**LOOKUP_ERRORS, 409: ApiErrorResponse}
-# Deleting a version that was ever published is a CONFLICT: archive it instead.
-DELETE_ERRORS: dict[int, type[Schema]] = {**LOOKUP_ERRORS, 409: ApiErrorResponse}
 # Creating a tag whose text already slugs onto an existing one is a CONFLICT.
 TAG_CREATE_ERRORS: dict[int, type[Schema]] = {
     400: ApiErrorResponse,
@@ -200,14 +201,30 @@ def handle_not_found(request: HttpRequest, exc: Http404) -> HttpResponse:
 
 @api.exception_handler(Exception)
 def handle_unexpected_error(request: HttpRequest, exc: Exception) -> HttpResponse:
-    """Log unexpected errors in full but report them generically, so backend internals --
-    connection strings, credentials in driver messages -- never leak to a client."""
-    logger.exception("Unhandled error while handling %s %s", request.method, request.path)
-    return _envelope(
+    """Report unexpected errors generically, and never log them whole.
+
+    The client gets a fixed message, so backend internals -- connection strings, credentials
+    in driver messages -- never leak to it. The log gets one line by default: the error's class,
+    a request id, the method and the route pattern. An error from the template store or the
+    template engine can carry template content or preview-context values, which can be health
+    data, so its message and traceback are not logged. A host that wants more sets
+    ``MANAGED_TEMPLATE_UNHANDLED_ERROR_HANDLER`` -- see ``hooks``. The response carries the
+    request id in ``X-Request-Id``, to match a client's report to the log line.
+    """
+    request_id = request_id_for(request)
+    report_unhandled_error(exc, request, request_id)
+    response = _envelope(
         request,
         "INTERNAL_ERROR",
         "An unexpected error occurred while handling the request.",
     )
+    response[REQUEST_ID_HEADER] = request_id
+    # Django logs every 5xx response again on ``django.request``, with the concrete path and
+    # the request object attached -- which mail_admins or an error tracker on the root logger
+    # turns into a report with request data. This error has been reported above, so that
+    # second record is suppressed.
+    response._has_been_logged = True  # type: ignore[attr-defined]
+    return response
 
 
 # --- helpers -------------------------------------------------------------------------
@@ -248,11 +265,17 @@ def _paginate(rows: list[RowT], page: int, page_size: int) -> list[RowT]:
 
 
 def _change_status(
-    key: str, status: ManagedTemplateStatus, payload: StatusChangeBody
+    request: HttpRequest, key: str, status: ManagedTemplateStatus, payload: StatusChangeBody
 ) -> DataResponse[ManagedTemplateOut]:
-    """Body shared by the four status routes, which differ only in how the target is chosen."""
+    """Body shared by the four status routes, which differ only in how the target is chosen.
+
+    Attribution comes from the host's ``MANAGED_TEMPLATE_ACTOR_RESOLVER`` when one is
+    configured, replacing anything the body claims; the body's ``changedBy`` is only used when
+    there is no resolver.
+    """
+    changed_by = resolve_changed_by(request, payload.changedBy)
     service = get_service_caller()
-    template = service.set_status(key, status, payload.version, payload.changedBy)
+    template = service.set_status(key, status, payload.version, changed_by)
     return _data(service, template)
 
 
@@ -423,6 +446,11 @@ def get_template_version(
     tags=["templates"],
 )
 def delete_template_version(request: HttpRequest, key: str, version: int) -> Status:
+    """Delete one version that was never published.
+
+    A version that was ever published is refused with a 409 ``CONFLICT``: a notification may be
+    pinned to it, and its status history records who published it. Archive it instead.
+    """
     service = get_service_caller()
     service.delete_template(key, version)
     return Status(204, None)
@@ -506,7 +534,7 @@ def set_template_status(
     A move the lifecycle does not allow is a 409 with code ``INVALID_STATUS_TRANSITION``.
     ``allowedTransitions`` on every template payload says in advance which moves will work.
     """
-    return _change_status(key, ManagedTemplateStatus(payload.status), payload)
+    return _change_status(request, key, ManagedTemplateStatus(payload.status), payload)
 
 
 @api.post(
@@ -520,10 +548,11 @@ def activate_template(
     """Publish one version.
 
     Other versions of the same key that are already active are left alone: a key may hold
-    several active versions at once, and choosing between them is the host application's
-    call, not this API's.
+    several active versions at once. An unpinned send renders the highest-numbered active
+    version, so activating an older version while a newer one is active does not change what
+    is sent.
     """
-    return _change_status(key, ManagedTemplateStatus.ACTIVE, payload)
+    return _change_status(request, key, ManagedTemplateStatus.ACTIVE, payload)
 
 
 @api.post(
@@ -535,7 +564,7 @@ def deactivate_template(
     request: HttpRequest, key: str, payload: StatusChangeBody = DEFAULT_STATUS_CHANGE_BODY
 ) -> DataResponse[ManagedTemplateOut]:
     """Retire one version without archiving it, so it can be activated again later."""
-    return _change_status(key, ManagedTemplateStatus.INACTIVE, payload)
+    return _change_status(request, key, ManagedTemplateStatus.INACTIVE, payload)
 
 
 @api.post(
@@ -548,7 +577,7 @@ def archive_template(
 ) -> DataResponse[ManagedTemplateOut]:
     """Archive one version. Terminal under the default lifecycle: an archived version has
     no allowed transitions, and publishing a new version is the way forward from there."""
-    return _change_status(key, ManagedTemplateStatus.ARCHIVED, payload)
+    return _change_status(request, key, ManagedTemplateStatus.ARCHIVED, payload)
 
 
 @api.post(
@@ -562,7 +591,9 @@ def preview_template(
     """Render a version against a supplied context, whatever its status.
 
     Pinning ``version`` is the point: it is what lets a draft be reviewed before anyone
-    activates it. Omitting it previews the latest version.
+    activates it. Omitting it previews the latest version, draft included. That is not what a
+    send renders: a send never renders a draft, only the newest active version, and for a key
+    with nothing published it may render a default the application registered instead.
 
     A template that fails to render comes back as a 409 ``PREVIEW_UNAVAILABLE`` carrying the
     renderer's message, because a broken template is what the caller asked to find out.
@@ -752,8 +783,9 @@ def delete_template(request: HttpRequest, key: str, query: Query[VersionQuery]) 
     every version at once, and doing it here as a loop would be a multi-step deletion with
     no transaction around it.
 
-    Only a draft that was never published can be deleted. Any other version is a 409
-    ``CONFLICT``: archive it instead.
+    Only a version that was never published can be deleted; anything else is a 409
+    ``CONFLICT``. That includes the latest version when ``version`` is omitted, so this route
+    cannot remove a published version by accident. Prefer naming the version.
     """
     service = get_service_caller()
     service.delete_template(key, query.version)

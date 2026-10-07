@@ -492,6 +492,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiErrorResponse'
+      description: 'Delete one version that was never published.
+
+
+        A version that was ever published is refused with a 409 ``CONFLICT``: a notification
+        may be
+
+        pinned to it, and its status history records who published it. Archive it
+        instead.'
       tags:
       - templates
       security:
@@ -756,9 +764,13 @@ paths:
         Other versions of the same key that are already active are left alone: a key
         may hold
 
-        several active versions at once, and choosing between them is the host application''s
+        several active versions at once. An unpinned send renders the highest-numbered
+        active
 
-        call, not this API''s.'
+        version, so activating an older version while a newer one is active does not
+        change what
+
+        is sent.'
       tags:
       - statuses
       requestBody:
@@ -940,7 +952,14 @@ paths:
         Pinning ``version`` is the point: it is what lets a draft be reviewed before
         anyone
 
-        activates it. Omitting it previews the latest version.
+        activates it. Omitting it previews the latest version, draft included. That
+        is not what a
+
+        send renders: a send never renders a draft, only the newest active version,
+        and for a key
+
+        with nothing published it may render a default the application registered
+        instead.
 
 
         A template that fails to render comes back as a 409 ``PREVIEW_UNAVAILABLE``
@@ -1483,10 +1502,13 @@ paths:
         no transaction around it.
 
 
-        Only a draft that was never published can be deleted. Any other version is
-        a 409
+        Only a version that was never published can be deleted; anything else is a
+        409
 
-        ``CONFLICT``: archive it instead.'
+        ``CONFLICT``. That includes the latest version when ``version`` is omitted,
+        so this route
+
+        cannot remove a published version by accident. Prefer naming the version.'
       tags:
       - templates
       security:
