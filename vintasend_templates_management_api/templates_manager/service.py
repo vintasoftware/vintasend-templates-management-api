@@ -224,6 +224,7 @@ class ServiceCaller:
             return self.service.update_template(template_key, data)
 
     def delete_template(self, template_key: str, version: int | None = None) -> None:
+        """Delete one never-published version, reporting a published one as the contract's 409."""
         with _not_found(template_key, version), _deletion_not_allowed():
             self.service.delete_template(template_key, version)
 
@@ -387,6 +388,9 @@ class _not_found(_translating):  # noqa: N801
 
     A context manager rather than a decorator so the message can name the key and version
     that were actually asked for, which is what makes a 404 body useful.
+
+    ``ManagedTemplateNoActiveVersionError`` is a subclass and maps to 404 with it: for a send, a
+    key with nothing published has nothing to show.
     """
 
     translates = ManagedTemplateNotFoundError
@@ -417,6 +421,19 @@ class _composition_error(_translating):  # noqa: N801
         return ApiError.composition_error(str(exc))
 
 
+class _deletion_not_allowed(_translating):  # noqa: N801
+    """Turn a refused delete into the contract's 409 ``CONFLICT``.
+
+    The version exists and the request was well formed; deleting it would erase what a pinned
+    notification renders and who published it. The library's message says to archive instead.
+    """
+
+    translates = ManagedTemplateDeletionNotAllowedError
+
+    def to_api_error(self, exc: ManagedTemplateError) -> ApiError:
+        return ApiError.conflict(str(exc))
+
+
 class _invalid_filter(_translating):  # noqa: N801
     """Turn a malformed or unknown-field filter into the contract's 400.
 
@@ -444,20 +461,6 @@ class _unsupported_ordering(_translating):  # noqa: N801
 
     def to_api_error(self, exc: ManagedTemplateError) -> ApiError:
         return ApiError.bad_request(str(exc))
-
-
-class _deletion_not_allowed(_translating):  # noqa: N801
-    """Turn a refused deletion of a published version into the contract's 409.
-
-    A conflict rather than a 400: the request was well-formed, but the version has been
-    published, and the library only deletes a draft that never was. Its message says to
-    archive the version instead, so it is passed through as is.
-    """
-
-    translates = ManagedTemplateDeletionNotAllowedError
-
-    def to_api_error(self, exc: ManagedTemplateError) -> ApiError:
-        return ApiError.conflict(str(exc))
 
 
 class _tag_not_found(_translating):  # noqa: N801

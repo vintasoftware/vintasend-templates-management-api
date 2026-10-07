@@ -102,3 +102,11 @@ VINTASEND_API_CORS_ORIGINS = _env_list("VINTASEND_API_CORS_ORIGINS")
 
 # Dotted path to a callable returning a configured ManagedTemplateService.
 MANAGED_TEMPLATE_SERVICE_FACTORY = _env("MANAGED_TEMPLATE_SERVICE_FACTORY")
+
+# Optional. Dotted path to a callable `(request) -> str | None` naming who made a status change.
+# When set, it replaces any `changedBy` in the request body. See templates_manager/hooks.py.
+MANAGED_TEMPLATE_ACTOR_RESOLVER = _env("MANAGED_TEMPLATE_ACTOR_RESOLVER")
+
+# Optional. Dotted path to a callable `(exc, request, request_id) -> None` that receives every
+# unexpected error. Unset, one redacted line is logged. See templates_manager/hooks.py.
+MANAGED_TEMPLATE_UNHANDLED_ERROR_HANDLER = _env("MANAGED_TEMPLATE_UNHANDLED_ERROR_HANDLER")

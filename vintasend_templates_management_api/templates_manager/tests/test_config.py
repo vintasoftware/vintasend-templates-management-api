@@ -82,6 +82,40 @@ def test_manage_py_check_fails_on_a_misconfigured_deployment() -> None:
     assert "vintasend_templates_management_api.E002" in str(failure.value)
 
 
+@pytest.mark.parametrize(
+    ("setting_name", "check_id"),
+    [
+        ("MANAGED_TEMPLATE_ACTOR_RESOLVER", "vintasend_templates_management_api.E003"),
+        ("MANAGED_TEMPLATE_UNHANDLED_ERROR_HANDLER", "vintasend_templates_management_api.E004"),
+    ],
+)
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("no_such_module.resolver", id="unimportable"),
+        pytest.param(f"{__name__}.NOT_CALLABLE", id="not-callable"),
+    ],
+)
+def test_a_hook_that_cannot_be_used_fails_the_checks(
+    settings: LazySettings, setting_name: str, check_id: str, value: str
+) -> None:
+    settings.VINTASEND_API_KEY = "k"
+    settings.MANAGED_TEMPLATE_SERVICE_FACTORY = FACTORY_PATH
+    setattr(settings, setting_name, value)
+
+    assert [str(error.id) for error in check_api_configuration(None)] == [check_id]
+
+
+@override_settings(
+    VINTASEND_API_KEY="k",
+    MANAGED_TEMPLATE_SERVICE_FACTORY=FACTORY_PATH,
+    MANAGED_TEMPLATE_ACTOR_RESOLVER=f"{__name__}.build_service",
+    MANAGED_TEMPLATE_UNHANDLED_ERROR_HANDLER=returns_nothing,
+)
+def test_usable_hooks_pass_the_checks() -> None:
+    assert check_api_configuration(None) == []
+
+
 # --- loading the factory -------------------------------------------------------------
 
 

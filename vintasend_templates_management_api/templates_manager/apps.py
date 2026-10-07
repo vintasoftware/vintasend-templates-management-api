@@ -4,6 +4,8 @@ from django.apps import AppConfig
 from django.conf import settings
 from django.core.checks import Error, register
 
+from .hooks import configured_hook
+
 
 class TemplatesManagerConfig(AppConfig):
     name = "vintasend_templates_management_api.templates_manager"
@@ -47,5 +49,20 @@ def check_api_configuration(app_configs: object, **kwargs: object) -> list[Error
                 id="vintasend_templates_management_api.E002",
             )
         )
+
+    for setting_name, check_id in (
+        ("MANAGED_TEMPLATE_ACTOR_RESOLVER", "vintasend_templates_management_api.E003"),
+        ("MANAGED_TEMPLATE_UNHANDLED_ERROR_HANDLER", "vintasend_templates_management_api.E004"),
+    ):
+        try:
+            configured_hook(setting_name)
+        except (ImportError, TypeError) as error:
+            errors.append(
+                Error(
+                    f"{setting_name} cannot be used: {error}",
+                    hint="Point it at an importable callable, or leave it empty.",
+                    id=check_id,
+                )
+            )
 
     return errors
