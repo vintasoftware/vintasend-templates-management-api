@@ -441,3 +441,19 @@ def test_deleting_an_unknown_version_is_a_404(
 
     assert delete("/api/v1/templates/welcome-email/versions/9").status_code == 404
     assert delete("/api/v1/templates/nope").status_code == 404
+
+
+@pytest.mark.parametrize(
+    "path", ["/api/v1/templates/welcome-email", "/api/v1/templates/welcome-email/versions/1"]
+)
+def test_deleting_a_published_version_is_a_conflict(
+    delete: ReadRequest, backend: InMemoryTemplateManagerBackend, path: str
+) -> None:
+    """The library refuses to delete a version that was ever published -- 409, not a 500."""
+    backend.add(key="welcome-email", version=1, status=ManagedTemplateStatus.ACTIVE)
+
+    response = delete(path)
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "CONFLICT"
+    assert [template.version for template in backend.templates] == [1]

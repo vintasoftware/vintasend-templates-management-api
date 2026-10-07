@@ -89,6 +89,8 @@ STATUS_ERRORS: dict[int, type[Schema]] = {**WRITE_ERRORS, 409: ApiErrorResponse}
 PREVIEW_ERRORS: dict[int, type[Schema]] = {**WRITE_ERRORS, 409: ApiErrorResponse}
 # 409 here is TEMPLATE_COMPOSITION_ERROR: the template exists and cannot be assembled.
 COMPOSITION_ERRORS: dict[int, type[Schema]] = {**LOOKUP_ERRORS, 409: ApiErrorResponse}
+# Deleting a version that was ever published is a CONFLICT: archive it instead.
+DELETE_ERRORS: dict[int, type[Schema]] = {**LOOKUP_ERRORS, 409: ApiErrorResponse}
 # Creating a tag whose text already slugs onto an existing one is a CONFLICT.
 TAG_CREATE_ERRORS: dict[int, type[Schema]] = {
     400: ApiErrorResponse,
@@ -417,7 +419,7 @@ def get_template_version(
 
 @api.delete(
     "/templates/{key}/versions/{version}",
-    response={204: None, **LOOKUP_ERRORS},
+    response={204: None, **DELETE_ERRORS},
     tags=["templates"],
 )
 def delete_template_version(request: HttpRequest, key: str, version: int) -> Status:
@@ -740,7 +742,7 @@ def get_template(
 
 @api.delete(
     "/templates/{key}",
-    response={204: None, **LOOKUP_ERRORS},
+    response={204: None, **DELETE_ERRORS},
     tags=["templates"],
 )
 def delete_template(request: HttpRequest, key: str, query: Query[VersionQuery]) -> Status:
@@ -749,6 +751,9 @@ def delete_template(request: HttpRequest, key: str, query: Query[VersionQuery]) 
     This deletes a *version*, never a whole key: the seam has no operation that removes
     every version at once, and doing it here as a loop would be a multi-step deletion with
     no transaction around it.
+
+    Only a draft that was never published can be deleted. Any other version is a 409
+    ``CONFLICT``: archive it instead.
     """
     service = get_service_caller()
     service.delete_template(key, query.version)
