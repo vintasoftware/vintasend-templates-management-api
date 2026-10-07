@@ -486,6 +486,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiErrorResponse'
+        '409':
+          description: Conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
       tags:
       - templates
       security:
@@ -1458,6 +1464,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiErrorResponse'
+        '409':
+          description: Conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
       description: 'Delete one version of a template, or its latest version when ``version``
         is omitted.
 
@@ -1468,7 +1480,13 @@ paths:
         every version at once, and doing it here as a loop would be a multi-step deletion
         with
 
-        no transaction around it.'
+        no transaction around it.
+
+
+        Only a draft that was never published can be deleted. Any other version is
+        a 409
+
+        ``CONFLICT``: archive it instead.'
       tags:
       - templates
       security:

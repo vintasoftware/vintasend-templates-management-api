@@ -43,6 +43,7 @@ from vintasend_managed_templates.dataclasses import (
 from vintasend_managed_templates.exceptions import (
     ManagedTemplateChangeUserNotFoundError,
     ManagedTemplateCompositionError,
+    ManagedTemplateDeletionNotAllowedError,
     ManagedTemplateError,
     ManagedTemplateInvalidFilterError,
     ManagedTemplateInvalidTagError,
@@ -223,7 +224,7 @@ class ServiceCaller:
             return self.service.update_template(template_key, data)
 
     def delete_template(self, template_key: str, version: int | None = None) -> None:
-        with _not_found(template_key, version):
+        with _not_found(template_key, version), _deletion_not_allowed():
             self.service.delete_template(template_key, version)
 
     def set_status(
@@ -443,6 +444,20 @@ class _unsupported_ordering(_translating):  # noqa: N801
 
     def to_api_error(self, exc: ManagedTemplateError) -> ApiError:
         return ApiError.bad_request(str(exc))
+
+
+class _deletion_not_allowed(_translating):  # noqa: N801
+    """Turn a refused deletion of a published version into the contract's 409.
+
+    A conflict rather than a 400: the request was well-formed, but the version has been
+    published, and the library only deletes a draft that never was. Its message says to
+    archive the version instead, so it is passed through as is.
+    """
+
+    translates = ManagedTemplateDeletionNotAllowedError
+
+    def to_api_error(self, exc: ManagedTemplateError) -> ApiError:
+        return ApiError.conflict(str(exc))
 
 
 class _tag_not_found(_translating):  # noqa: N801

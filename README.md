@@ -56,11 +56,11 @@ SQLAlchemy-backed service and the HTTP layer neither knows nor cares.
 | GET | `/api/v1/templates` | List template versions with filters and pagination |
 | POST | `/api/v1/templates` | Create a template's first version |
 | GET | `/api/v1/templates/{key}` | One version — the latest unless `?version=` is given |
-| DELETE | `/api/v1/templates/{key}` | Delete one version (the latest unless `?version=`) |
+| DELETE | `/api/v1/templates/{key}` | Delete one never-published version (the latest unless `?version=`); a published one is a 409 `CONFLICT` |
 | GET | `/api/v1/templates/{key}/versions` | Every version, newest first |
 | POST | `/api/v1/templates/{key}/versions` | Create a new version from the latest |
 | GET | `/api/v1/templates/{key}/versions/{version}` | One pinned version |
-| DELETE | `/api/v1/templates/{key}/versions/{version}` | Delete one pinned version |
+| DELETE | `/api/v1/templates/{key}/versions/{version}` | Delete one pinned, never-published version; a published one is a 409 `CONFLICT` |
 | GET | `/api/v1/templates/{key}/composition` | One version assembled — what the engine actually receives |
 | GET | `/api/v1/templates/{key}/status-history` | Status audit trail, most recent first |
 | POST | `/api/v1/templates/{key}/status` | Move a version to an explicitly named status |
