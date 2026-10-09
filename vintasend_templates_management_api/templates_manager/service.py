@@ -125,8 +125,9 @@ class ServiceCaller:
     """The slice of a ``ManagedTemplateService`` this API depends on, with the library's
     exceptions already translated into the contract's errors.
 
-    Every method here raises ``ApiError`` and nothing else from the library's exception
-    hierarchy, so a route never has to decide what a given failure means on the wire.
+    Every method here except ``render_template`` raises ``ApiError`` and nothing else from
+    the library's exception hierarchy, so a route never has to decide what a given failure
+    means on the wire.
     """
 
     def __init__(self, service: ManagedTemplateService) -> None:
@@ -291,19 +292,22 @@ class ServiceCaller:
 
     # --- composition ---------------------------------------------------------------
 
-    def get_composed_template(
-        self, template_key: str, version: int | None = None
-    ) -> ManagedTemplate:
-        """One version assembled the way the template engine will receive it.
+    def compose_template(self, template: ManagedTemplate) -> ManagedTemplate:
+        """A version already in hand, assembled the way the template engine will receive it.
+
+        Takes the template rather than its key, so the caller's one read is the version that
+        gets composed. Composing still reads the store, for whatever the template extends or
+        includes.
 
         Composition failures are the template's, not the request's: a base that does not
         exist, a chain that loops, a malformed tag. They are reported as
         ``TEMPLATE_COMPOSITION_ERROR`` carrying the library's message, which names the chain
         it failed on -- the message is the point, since it is what makes the template
-        fixable.
+        fixable. A store that fails while composing is not translated, and reaches the
+        unexpected-error handler as a 500.
         """
-        with _not_found(template_key, version), _composition_error():
-            return self.service.get_composed_template(template_key, version)
+        with _not_found(template.key, template.version), _composition_error():
+            return self.service.compose_template(template)
 
     def get_template_references(self, template: ManagedTemplate) -> list[TemplateReference]:
         """The templates this version directly extends or includes.
@@ -337,6 +341,11 @@ class ServiceCaller:
 
         The template is fetched by the caller so a preview can pin an explicit version --
         which is the point of previewing a draft that has not been activated.
+
+        Unlike the methods above, this translates nothing: whatever the renderer raises is
+        passed through, and ``build_template_preview`` decides what it means. Hand it a
+        template from ``compose_template``; the library composes again before rendering,
+        which for a composed template finds nothing to resolve and reads nothing.
         """
         return self.service.render_template(notification, template, context)
 

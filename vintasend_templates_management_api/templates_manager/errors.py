@@ -16,9 +16,13 @@ from .contract import ApiErrorCode
 # the same reason PREVIEW_UNAVAILABLE is: the request was well formed and the stored
 # template is what cannot be assembled -- a missing base, a loop, a malformed tag -- which
 # is a fact about the template the caller asked about, and the message says which.
+#
+# FORBIDDEN is what a host answers when it authenticated the caller and then refused it. A
+# 401 there would tell a signed-in user to sign in again.
 STATUS_BY_CODE: dict[str, int] = {
     "BAD_REQUEST": 400,
     "UNAUTHORIZED": 401,
+    "FORBIDDEN": 403,
     "NOT_FOUND": 404,
     "CONFLICT": 409,
     "INVALID_STATUS_TRANSITION": 409,
@@ -40,8 +44,21 @@ class ApiError(Exception):
         self.details = details
 
     @classmethod
-    def bad_request(cls, message: str, details: JsonValue | None = None) -> "ApiError":
-        return cls("BAD_REQUEST", message, details)
+    def bad_request(
+        cls, message: str, issues: list[JsonValue] | None = None, **context: JsonValue
+    ) -> "ApiError":
+        """A 400, which always carries ``details.issues``.
+
+        Every invalid input answers in the same shape, so a client reads one list whatever
+        it got wrong. A failure that is not about one field is a single issue with an empty
+        path repeating the message. ``context`` adds keys next to ``issues``.
+        """
+        listed = issues if issues is not None else [issue("", message)]
+        return cls("BAD_REQUEST", message, {**context, "issues": listed})
+
+    @classmethod
+    def forbidden(cls, message: str) -> "ApiError":
+        return cls("FORBIDDEN", message)
 
     @classmethod
     def not_found(cls, message: str) -> "ApiError":
@@ -62,3 +79,13 @@ class ApiError(Exception):
     @classmethod
     def composition_error(cls, message: str) -> "ApiError":
         return cls("TEMPLATE_COMPOSITION_ERROR", message)
+
+
+def issue(path: str, message: str) -> JsonValue:
+    """One entry of a 400's ``details.issues``. ``path`` is dotted, and empty for the body."""
+    return {"path": path, "message": message}
+
+
+def invalid_request(issues: list[JsonValue]) -> ApiError:
+    """The 400 for input that failed validation, wherever in the request it was."""
+    return ApiError.bad_request("Invalid request.", issues)

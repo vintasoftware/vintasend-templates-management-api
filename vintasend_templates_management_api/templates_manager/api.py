@@ -13,8 +13,8 @@ from collections.abc import Sequence
 from typing import TypeVar
 
 from django.http import Http404, HttpRequest, HttpResponse, JsonResponse
-from ninja import NinjaAPI, Query, Schema, Status
-from ninja.errors import AuthenticationError, ValidationError
+from ninja import NinjaAPI, Path, Query, Schema, Status
+from ninja.errors import AuthenticationError, HttpError, ValidationError
 
 from pydantic import JsonValue
 from vintasend_managed_templates.constants import ManagedTemplateStatus, ManagedTemplateTagStatus
@@ -26,6 +26,7 @@ from vintasend_managed_templates.dataclasses import (
 )
 
 from .auth import ApiKeyAuth
+from .bodies import JsonBodyParser, refuse_an_empty_json_body
 from .contract import (
     API_VERSION,
     ApiErrorResponse,
@@ -39,7 +40,7 @@ from .contract import (
     TemplatePreviewOut,
     TemplateStatusHistoryOut,
 )
-from .errors import STATUS_BY_CODE, ApiError
+from .errors import STATUS_BY_CODE, ApiError, invalid_request, issue
 from .filters import build_backend_filter, build_order_by
 from .hooks import REQUEST_ID_HEADER, report_unhandled_error, request_id_for, resolve_changed_by
 from .preview import build_template_preview
@@ -78,15 +79,23 @@ TagPage = PaginatedResponse[ManagedTemplateTagOut]
 # Error responses are produced by the exception handlers below rather than returned from a
 # view, so they are declared purely so the generated schema documents them. Each route
 # declares the subset it can actually produce.
-LIST_ERRORS: dict[int, type[Schema]] = {400: ApiErrorResponse, 401: ApiErrorResponse}
-LOOKUP_ERRORS: dict[int, type[Schema]] = {401: ApiErrorResponse, 404: ApiErrorResponse}
+#
+# Every authenticated route can refuse the caller twice over: 401 when no valid credential
+# was presented, 403 (FORBIDDEN) when a host authenticated the caller and then refused it.
+AUTH_ERRORS: dict[int, type[Schema]] = {401: ApiErrorResponse, 403: ApiErrorResponse}
+LIST_ERRORS: dict[int, type[Schema]] = {400: ApiErrorResponse, **AUTH_ERRORS}
+LOOKUP_ERRORS: dict[int, type[Schema]] = {**AUTH_ERRORS, 404: ApiErrorResponse}
 WRITE_ERRORS: dict[int, type[Schema]] = {
     400: ApiErrorResponse,
-    401: ApiErrorResponse,
+    **AUTH_ERRORS,
     404: ApiErrorResponse,
 }
+# The routes that name a version in the path: a version that is not a positive integer is a
+# 400 before anything is looked up.
+VERSION_LOOKUP_ERRORS: dict[int, type[Schema]] = {400: ApiErrorResponse, **LOOKUP_ERRORS}
 # 409 here is CONFLICT: the version was published, so the library refuses to delete it.
 DELETE_ERRORS: dict[int, type[Schema]] = {**LOOKUP_ERRORS, 409: ApiErrorResponse}
+VERSION_DELETE_ERRORS: dict[int, type[Schema]] = {**VERSION_LOOKUP_ERRORS, 409: ApiErrorResponse}
 # 409 covers both CONFLICT and INVALID_STATUS_TRANSITION; the body's `code` says which.
 STATUS_ERRORS: dict[int, type[Schema]] = {**WRITE_ERRORS, 409: ApiErrorResponse}
 PREVIEW_ERRORS: dict[int, type[Schema]] = {**WRITE_ERRORS, 409: ApiErrorResponse}
@@ -95,14 +104,22 @@ COMPOSITION_ERRORS: dict[int, type[Schema]] = {**LOOKUP_ERRORS, 409: ApiErrorRes
 # Creating a tag whose text already slugs onto an existing one is a CONFLICT.
 TAG_CREATE_ERRORS: dict[int, type[Schema]] = {
     400: ApiErrorResponse,
-    401: ApiErrorResponse,
+    **AUTH_ERRORS,
     409: ApiErrorResponse,
 }
 
-# The status-change and preview bodies are optional, so an omitted one falls back to
-# these. Shared rather than constructed per call because they are only ever read; every
+# The new-version, status-change and preview bodies are optional, so an omitted one falls
+# back to these. Shared rather than constructed per call because they are only ever read; every
 # field is spelled out so a field added to either schema is a compile-time decision here
 # rather than a silent default.
+DEFAULT_CREATE_VERSION_BODY = CreateVersionBody(
+    name=None,
+    description=None,
+    bodyTemplate=None,
+    subjectTemplate=None,
+    preheaderTemplate=None,
+    tags=None,
+)
 DEFAULT_STATUS_CHANGE_BODY = StatusChangeBody(version=None, changedBy=None)
 DEFAULT_PREVIEW_BODY = PreviewBody(context={}, version=None)
 
@@ -115,6 +132,7 @@ api = NinjaAPI(
     ),
     urls_namespace="vintasend_templates_management_api",
     auth=ApiKeyAuth(),
+    parser=JsonBodyParser(),
     docs_url="/docs",
 )
 
@@ -168,17 +186,14 @@ def handle_validation_error(request: HttpRequest, exc: ValidationError) -> HttpR
     leading source segment and Ninja's synthetic argument name are dropped so the reported
     path is the field name the client actually sent.
     """
-    # Annotated rather than inferred: pydantic types an error dict's values loosely, so
-    # without this the list infers as `list[dict[str, Any]]` and the `Any` would ride into
-    # the response body untyped.
-    issues: list[JsonValue] = [
-        {
-            "path": ".".join(str(part) for part in _issue_path(issue.get("loc", ()))),
-            "message": str(issue.get("msg", "")),
-        }
-        for issue in exc.errors
+    issues = [
+        issue(
+            ".".join(str(part) for part in _issue_path(failure.get("loc", ()))),
+            str(failure.get("msg", "")),
+        )
+        for failure in exc.errors
     ]
-    return _envelope(request, "BAD_REQUEST", "Invalid request.", {"issues": issues})
+    return handle_api_error(request, invalid_request(issues))
 
 
 def _issue_path(loc: Sequence[str | int]) -> list[str | int]:
@@ -188,6 +203,21 @@ def _issue_path(loc: Sequence[str | int]) -> list[str | int]:
     if parts and parts[0] in SYNTHETIC_ARGUMENT_NAMES:
         parts = parts[1:]
     return parts
+
+
+@api.exception_handler(HttpError)
+def handle_http_error(request: HttpRequest, exc: HttpError) -> HttpResponse:
+    """Put Ninja's own refusals in the error envelope.
+
+    Ninja raises ``HttpError`` when it cannot read a request body, wrapping whatever the
+    parser raised. ``JsonBodyParser`` raises the contract's 400, so that is unwrapped and
+    answered as it stands. Any other 400 gets the same shape. Anything else is unexpected.
+    """
+    if isinstance(exc.__cause__, ApiError):
+        return handle_api_error(request, exc.__cause__)
+    if exc.status_code == 400:
+        return handle_api_error(request, invalid_request([issue("", str(exc))]))
+    return handle_unexpected_error(request, exc)
 
 
 @api.exception_handler(Http404)
@@ -284,7 +314,7 @@ def _change_status(
 
 @api.get(
     "/capabilities",
-    response={200: DataResponse[dict[str, bool]], 401: ApiErrorResponse},
+    response={200: DataResponse[dict[str, bool]], **AUTH_ERRORS},
     tags=["system"],
 )
 def get_capabilities(request: HttpRequest) -> DataResponse[dict[str, bool]]:
@@ -326,27 +356,32 @@ def list_templates(request: HttpRequest, query: Query[TemplateListQuery]) -> Tem
     # is refused rather than dropped -- see ``filters.build_order_by``.
     service = get_service_caller()
     capabilities = service.get_capabilities()
+    backend_filter = build_backend_filter(query, capabilities)
+    order_by = build_order_by(query, capabilities)
     templates = service.get_paginated_filtered_templates(
-        build_backend_filter(query, capabilities),
-        query.page,
-        query.pageSize,
-        build_order_by(query, capabilities),
+        backend_filter, query.page, query.pageSize, order_by
     )
 
-    data = [_out(service, template) for template in templates]
+    # The seam has no count, so whether another page has a row is asked directly: a full
+    # page is followed by a one-row read of the first row after it. That row is on page
+    # `page * pageSize + 1` of one-row pages. A short page is the last one without asking.
+    has_more = len(templates) == query.pageSize and bool(
+        service.get_paginated_filtered_templates(
+            backend_filter, query.page * query.pageSize + 1, 1, order_by
+        )
+    )
+
     return TemplatePage(
-        data=data,
+        data=[_out(service, template) for template in templates],
         page=query.page,
         pageSize=query.pageSize,
-        # True when the page came back full, meaning another page may exist. The seam has
-        # no count method, so no total is available.
-        hasMore=len(data) == query.pageSize,
+        hasMore=has_more,
     )
 
 
 @api.post(
     "/templates",
-    response={201: DataResponse[ManagedTemplateOut], 400: ApiErrorResponse, 401: ApiErrorResponse},
+    response={201: DataResponse[ManagedTemplateOut], 400: ApiErrorResponse, **AUTH_ERRORS},
     tags=["templates"],
 )
 def create_template(request: HttpRequest, payload: CreateTemplateBody) -> Status:
@@ -406,13 +441,17 @@ def list_template_versions(request: HttpRequest, key: str) -> ListResponse[Manag
     response={201: DataResponse[ManagedTemplateOut], **WRITE_ERRORS},
     tags=["templates"],
 )
-def create_template_version(request: HttpRequest, key: str, payload: CreateVersionBody) -> Status:
+def create_template_version(
+    request: HttpRequest, key: str, payload: CreateVersionBody = DEFAULT_CREATE_VERSION_BODY
+) -> Status:
     """Create a new version of an existing template, copied forward from its latest one.
 
     Templates are versioned rather than edited in place, which is why this is a POST that
     creates a resource and not a PATCH that mutates one: an already-published version is
-    never modified. Fields left unset are carried over from the latest version.
+    never modified. Fields left unset are carried over from the latest version, so the body
+    may be omitted.
     """
+    refuse_an_empty_json_body(request)
     service = get_service_caller()
     template = service.update_template(
         key,
@@ -430,11 +469,11 @@ def create_template_version(request: HttpRequest, key: str, payload: CreateVersi
 
 @api.get(
     "/templates/{key}/versions/{version}",
-    response={200: DataResponse[ManagedTemplateOut], **LOOKUP_ERRORS},
+    response={200: DataResponse[ManagedTemplateOut], **VERSION_LOOKUP_ERRORS},
     tags=["templates"],
 )
 def get_template_version(
-    request: HttpRequest, key: str, version: int
+    request: HttpRequest, key: str, version: int = Path(..., ge=1)
 ) -> DataResponse[ManagedTemplateOut]:
     service = get_service_caller()
     return _data(service, service.get_template(key, version))
@@ -442,10 +481,12 @@ def get_template_version(
 
 @api.delete(
     "/templates/{key}/versions/{version}",
-    response={204: None, **DELETE_ERRORS},
+    response={204: None, **VERSION_DELETE_ERRORS},
     tags=["templates"],
 )
-def delete_template_version(request: HttpRequest, key: str, version: int) -> Status:
+def delete_template_version(
+    request: HttpRequest, key: str, version: int = Path(..., ge=1)
+) -> Status:
     """Delete one version that was never published.
 
     A version that was ever published is refused with a 409 ``CONFLICT``: a notification may be
@@ -484,8 +525,11 @@ def get_template_composition(
     broke, for the same reason a template that will not render is a 409 rather than a 500.
     """
     service = get_service_caller()
+    # One read: composing the template in hand rather than reading it again by key keeps
+    # the references, the flag and the composed sources about the same version, even when
+    # a new version lands between two reads of an unpinned key.
     template = service.get_template(key, query.version)
-    composed = service.get_composed_template(key, query.version)
+    composed = service.compose_template(template)
     return DataResponse[TemplateCompositionOut](
         data=serialize_composition(
             template,
@@ -552,6 +596,7 @@ def activate_template(
     version, so activating an older version while a newer one is active does not change what
     is sent.
     """
+    refuse_an_empty_json_body(request)
     return _change_status(request, key, ManagedTemplateStatus.ACTIVE, payload)
 
 
@@ -564,6 +609,7 @@ def deactivate_template(
     request: HttpRequest, key: str, payload: StatusChangeBody = DEFAULT_STATUS_CHANGE_BODY
 ) -> DataResponse[ManagedTemplateOut]:
     """Retire one version without archiving it, so it can be activated again later."""
+    refuse_an_empty_json_body(request)
     return _change_status(request, key, ManagedTemplateStatus.INACTIVE, payload)
 
 
@@ -577,6 +623,7 @@ def archive_template(
 ) -> DataResponse[ManagedTemplateOut]:
     """Archive one version. Terminal under the default lifecycle: an archived version has
     no allowed transitions, and publishing a new version is the way forward from there."""
+    refuse_an_empty_json_body(request)
     return _change_status(request, key, ManagedTemplateStatus.ARCHIVED, payload)
 
 
@@ -595,9 +642,21 @@ def preview_template(
     send renders: a send never renders a draft, only the newest active version, and for a key
     with nothing published it may render a default the application registered instead.
 
-    A template that fails to render comes back as a 409 ``PREVIEW_UNAVAILABLE`` carrying the
-    renderer's message, because a broken template is what the caller asked to find out.
+    A broken template is what the caller asked to find out, so it is a 409 carrying the
+    message that makes the draft fixable, and the code says what to fix:
+
+    * A template that cannot be composed -- a missing base, a loop, a malformed
+      ``managed_*`` tag -- is a 409 ``TEMPLATE_COMPOSITION_ERROR`` carrying the library's
+      message, which names the chain. It is the same answer ``GET /composition`` gives for
+      the same template.
+    * A template that composes but fails to render is a 409 ``PREVIEW_UNAVAILABLE``
+      carrying the renderer's message.
+
+    A failure reading the store is a 500 ``INTERNAL_ERROR`` with the generic message, like
+    any other unexpected error: it carries no backend detail, and it goes to the
+    unhandled-error hook.
     """
+    refuse_an_empty_json_body(request)
     service = get_service_caller()
     template = service.get_template(key, payload.version)
     return DataResponse[TemplatePreviewOut](
@@ -653,7 +712,8 @@ def list_tags(request: HttpRequest, query: Query[TagListQuery]) -> TagPage:
         data=[serialize_tag(tag) for tag in page],
         page=query.page,
         pageSize=query.pageSize,
-        hasMore=len(page) == query.pageSize,
+        # The whole list is in hand, so this is exact.
+        hasMore=query.page * query.pageSize < len(tags),
     )
 
 

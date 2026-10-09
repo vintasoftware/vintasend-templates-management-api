@@ -2,11 +2,13 @@
 
 import datetime
 
+from django.test import Client
+
 import pytest
 from vintasend_managed_templates.constants import ManagedTemplateStatus
 
 from .conftest import ReadRequest, WriteRequest
-from .fakes import FIXED_NOW, InMemoryTemplateManagerBackend
+from .fakes import AUTH_HEADERS, FIXED_NOW, InMemoryTemplateManagerBackend
 
 
 def test_lists_templates_with_the_pagination_envelope(
@@ -25,16 +27,64 @@ def test_lists_templates_with_the_pagination_envelope(
     assert body["hasMore"] is False
 
 
-def test_reports_has_more_when_a_page_comes_back_full(
+def test_reports_has_more_when_the_next_page_has_a_row(
     get: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:
-    """The seam has no count method, so a full page is the only signal another may exist."""
-    backend.add(key="a")
-    backend.add(key="b")
+    for key in "abc":
+        backend.add(key=key)
 
     response = get("/api/v1/templates?pageSize=2")
 
     assert response.json()["hasMore"] is True
+
+
+@pytest.mark.parametrize(("rows", "page"), [(2, 1), (4, 2), (6, 3)])
+def test_a_list_that_exactly_fills_its_last_page_offers_no_next_page(
+    get: ReadRequest, backend: InMemoryTemplateManagerBackend, rows: int, page: int
+) -> None:
+    """A full page is not proof of another: the next one may be empty."""
+    for index in range(rows):
+        backend.add(key=f"key-{index}")
+
+    body = get(f"/api/v1/templates?pageSize=2&page={page}").json()
+
+    assert len(body["data"]) == 2
+    assert body["hasMore"] is False
+
+
+@pytest.mark.parametrize(("rows", "page"), [(3, 1), (5, 2), (7, 3)])
+def test_a_middle_page_offers_the_next_one(
+    get: ReadRequest, backend: InMemoryTemplateManagerBackend, rows: int, page: int
+) -> None:
+    """Past the first page too: the row after page 2 of two is the fifth, not the sixth."""
+    for index in range(rows):
+        backend.add(key=f"key-{index}")
+
+    assert get(f"/api/v1/templates?pageSize=2&page={page}").json()["hasMore"] is True
+
+
+def test_has_more_is_asked_with_the_same_filter_and_order(
+    get: ReadRequest, backend: InMemoryTemplateManagerBackend
+) -> None:
+    for key in "ab":
+        backend.add(key=key)
+
+    get("/api/v1/templates?pageSize=2&orderByField=key&orderByDirection=desc")
+
+    page, probe = [
+        args for name, args in backend.calls if name == "get_paginated_filtered_templates"
+    ]
+    assert probe[0] == page[0]
+    assert probe[1:] == (3, 1, page[3])
+
+
+def test_a_short_page_does_not_ask_for_another(
+    get: ReadRequest, backend: InMemoryTemplateManagerBackend
+) -> None:
+    backend.add(key="a")
+
+    assert get("/api/v1/templates?pageSize=2").json()["hasMore"] is False
+    assert [name for name, _ in backend.calls].count("get_paginated_filtered_templates") == 1
 
 
 def test_pages_are_one_indexed(get: ReadRequest, backend: InMemoryTemplateManagerBackend) -> None:
@@ -401,6 +451,22 @@ def test_a_new_version_never_touches_the_one_it_came_from(
     assert original.body_template == "<p>old</p>"
 
 
+def test_the_new_version_body_may_be_omitted(
+    client: Client, backend: InMemoryTemplateManagerBackend
+) -> None:
+    """Every field is optional, so the body is too: a new version identical to the latest."""
+    backend.add(key="welcome-email", version=1, name="v1")
+
+    # `generic` rather than `post`: the test client's `post` always sends a multipart body.
+    response = client.generic(
+        "POST", "/api/v1/templates/welcome-email/versions", headers=AUTH_HEADERS
+    )
+
+    assert response.status_code == 201
+    assert response.json()["data"]["version"] == 2
+    assert response.json()["data"]["name"] == "v1"
+
+
 def test_versioning_an_unknown_key_is_a_404(post: WriteRequest) -> None:
     response = post("/api/v1/templates/nope/versions", {"name": "x"})
 
@@ -432,6 +498,24 @@ def test_deletes_a_pinned_version(
 
     assert response.status_code == 204
     assert [template.version for template in backend.templates] == [2]
+
+
+@pytest.mark.parametrize("version", ["1abc", "1.9", "0", "-1", "one"])
+def test_a_version_in_the_path_must_be_a_positive_integer(
+    get: ReadRequest, delete: ReadRequest, backend: InMemoryTemplateManagerBackend, version: str
+) -> None:
+    """Read loosely, `1abc` and `1.9` would both name version 1 -- and delete it."""
+    backend.add(key="welcome-email", version=1)
+
+    for response in (
+        get(f"/api/v1/templates/welcome-email/versions/{version}"),
+        delete(f"/api/v1/templates/welcome-email/versions/{version}"),
+    ):
+        assert response.status_code == 400
+        issues = response.json()["error"]["details"]["issues"]
+        assert [issue["path"] for issue in issues] == ["version"]
+
+    assert [template.version for template in backend.templates] == [1]
 
 
 def test_deleting_an_unknown_version_is_a_404(

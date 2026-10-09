@@ -17,6 +17,7 @@ from ..management.commands.export_openapi import (
     build_schema,
     render_schema,
 )
+from .conftest import undeclared_status
 
 
 @pytest.fixture(scope="module")
@@ -97,6 +98,59 @@ def test_every_route_documents_the_error_envelope(schema: dict[str, Any]) -> Non
                     "$ref"
                 ]
                 assert schema_ref.endswith("ApiErrorResponse")
+
+
+def _declared(operation: dict[str, Any]) -> set[str]:
+    return {str(code) for code in operation["responses"]}
+
+
+def test_the_routes_that_name_a_version_declare_its_400(schema: dict[str, Any]) -> None:
+    """`/versions/1abc` is a 400 before anything is looked up."""
+    operations = schema["paths"][f"{API_BASE_PATH}/templates/{{key}}/versions/{{version}}"]
+
+    assert "400" in _declared(operations["get"])
+    assert "400" in _declared(operations["delete"])
+    for operation in operations.values():
+        version = next(p for p in operation["parameters"] if p["name"] == "version")
+        assert version["schema"]["minimum"] == 1
+
+
+def test_every_api_route_declares_forbidden(schema: dict[str, Any]) -> None:
+    """A host that authenticates the caller and then refuses it answers 403, not 401."""
+    codes = schema["components"]["schemas"]["ApiErrorBody"]["properties"]["code"]["enum"]
+    assert "FORBIDDEN" in codes
+
+    for path, operations in schema["paths"].items():
+        if path.startswith(API_BASE_PATH):
+            for method, operation in operations.items():
+                assert "403" in _declared(operation), f"{method.upper()} {path} has no 403"
+
+
+def test_the_new_version_body_is_optional_like_the_lifecycle_bodies(
+    schema: dict[str, Any],
+) -> None:
+    """Every field of it is optional, so the body may be omitted."""
+    for path in ("versions", "activate", "deactivate", "archive", "preview"):
+        body = schema["paths"][f"{API_BASE_PATH}/templates/{{key}}/{path}"]["post"]["requestBody"]
+        assert not body.get("required", False), path
+
+
+def test_the_status_filter_says_how_to_find_retired_versions(schema: dict[str, Any]) -> None:
+    """`?status=archived` alone finds nothing, because the one-row-per-key default applies."""
+    operation = schema["paths"][f"{API_BASE_PATH}/templates"]["get"]
+    status = next(p for p in operation["parameters"] if p["name"] == "status")
+
+    assert "mostRecentActiveVersion=false" in status["description"]
+
+
+def test_an_undeclared_status_is_reported() -> None:
+    """The guard every test client runs is only worth having if it fails, so it is exercised."""
+    route = "api/v1/templates/<key>/versions/<version>"
+
+    assert undeclared_status("GET", route, 400) is None
+    assert undeclared_status("GET", route, 409) is not None
+    assert undeclared_status("GET", route, 500) is None
+    assert undeclared_status("GET", "api/v1/nowhere", 404) is None
 
 
 def test_the_document_is_valid_yaml_with_the_generated_header() -> None:

@@ -27,6 +27,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
       description: 'Which filters and orders the configured template backend can honour.
 
 
@@ -117,8 +123,16 @@ paths:
               type: string
             type: array
           - type: 'null'
+          description: 'Applies on top of mostRecentActiveVersion, which defaults
+            to true and keeps one row per key: its newest draft or active version.
+            That row is never inactive or archived, so to find inactive or archived
+            versions send mostRecentActiveVersion=false as well.'
           title: Status
         required: false
+        description: 'Applies on top of mostRecentActiveVersion, which defaults to
+          true and keeps one row per key: its newest draft or active version. That
+          row is never inactive or archived, so to find inactive or archived versions
+          send mostRecentActiveVersion=false as well.'
       - in: query
         name: createdAtFrom
         schema:
@@ -237,6 +251,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
       description: 'List templates matching the filters -- one row per key by default.
 
 
@@ -289,6 +309,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
       description: 'Create a template''s first version.
 
 
@@ -332,6 +358,12 @@ paths:
                 $ref: '#/components/schemas/ListResponse_ManagedTemplateOut_'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+        '403':
+          description: Forbidden
           content:
             application/json:
               schema:
@@ -388,6 +420,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
         '404':
           description: Not Found
           content:
@@ -404,15 +442,26 @@ paths:
         creates a resource and not a PATCH that mutates one: an already-published
         version is
 
-        never modified. Fields left unset are carried over from the latest version.'
+        never modified. Fields left unset are carried over from the latest version,
+        so the body
+
+        may be omitted.'
       tags:
       - templates
       requestBody:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreateVersionBody'
-        required: true
+              allOf:
+              - $ref: '#/components/schemas/CreateVersionBody'
+              default:
+                name: null
+                description: null
+                bodyTemplate: null
+                subjectTemplate: null
+                preheaderTemplate: null
+                tags: null
+        required: false
       security:
       - ApiKeyAuth: []
   /api/v1/templates/{key}/versions/{version}:
@@ -429,6 +478,7 @@ paths:
       - in: path
         name: version
         schema:
+          minimum: 1
           title: Version
           type: integer
         required: true
@@ -439,8 +489,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DataResponse_ManagedTemplateOut_'
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+        '403':
+          description: Forbidden
           content:
             application/json:
               schema:
@@ -468,14 +530,27 @@ paths:
       - in: path
         name: version
         schema:
+          minimum: 1
           title: Version
           type: integer
         required: true
       responses:
         '204':
           description: No Content
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+        '403':
+          description: Forbidden
           content:
             application/json:
               schema:
@@ -533,6 +608,12 @@ paths:
                 $ref: '#/components/schemas/DataResponse_TemplateCompositionOut_'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+        '403':
+          description: Forbidden
           content:
             application/json:
               schema:
@@ -628,6 +709,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
         '404':
           description: Not Found
           content:
@@ -674,6 +761,12 @@ paths:
                 $ref: '#/components/schemas/ApiErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+        '403':
+          description: Forbidden
           content:
             application/json:
               schema:
@@ -742,6 +835,12 @@ paths:
                 $ref: '#/components/schemas/ApiErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+        '403':
+          description: Forbidden
           content:
             application/json:
               schema:
@@ -815,6 +914,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
         '404':
           description: Not Found
           content:
@@ -869,6 +974,12 @@ paths:
                 $ref: '#/components/schemas/ApiErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+        '403':
+          description: Forbidden
           content:
             application/json:
               schema:
@@ -934,6 +1045,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
         '404':
           description: Not Found
           content:
@@ -946,27 +1063,22 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiErrorResponse'
-      description: 'Render a version against a supplied context, whatever its status.
-
-
-        Pinning ``version`` is the point: it is what lets a draft be reviewed before
-        anyone
-
-        activates it. Omitting it previews the latest version, draft included. That
-        is not what a
-
-        send renders: a send never renders a draft, only the newest active version,
-        and for a key
-
-        with nothing published it may render a default the application registered
-        instead.
-
-
-        A template that fails to render comes back as a 409 ``PREVIEW_UNAVAILABLE``
-        carrying the
-
-        renderer''s message, because a broken template is what the caller asked to
-        find out.'
+      description: "Render a version against a supplied context, whatever its status.\n\
+        \nPinning ``version`` is the point: it is what lets a draft be reviewed before\
+        \ anyone\nactivates it. Omitting it previews the latest version, draft included.\
+        \ That is not what a\nsend renders: a send never renders a draft, only the\
+        \ newest active version, and for a key\nwith nothing published it may render\
+        \ a default the application registered instead.\n\nA broken template is what\
+        \ the caller asked to find out, so it is a 409 carrying the\nmessage that\
+        \ makes the draft fixable, and the code says what to fix:\n\n* A template\
+        \ that cannot be composed -- a missing base, a loop, a malformed\n  ``managed_*``\
+        \ tag -- is a 409 ``TEMPLATE_COMPOSITION_ERROR`` carrying the library's\n\
+        \  message, which names the chain. It is the same answer ``GET /composition``\
+        \ gives for\n  the same template.\n* A template that composes but fails to\
+        \ render is a 409 ``PREVIEW_UNAVAILABLE``\n  carrying the renderer's message.\n\
+        \nA failure reading the store is a 500 ``INTERNAL_ERROR`` with the generic\
+        \ message, like\nany other unexpected error: it carries no backend detail,\
+        \ and it goes to the\nunhandled-error hook."
       tags:
       - templates
       requestBody:
@@ -1007,6 +1119,12 @@ paths:
                 $ref: '#/components/schemas/ApiErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+        '403':
+          description: Forbidden
           content:
             application/json:
               schema:
@@ -1115,6 +1233,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
       description: 'List tags, newest filter first: by status, by a text search, or
         by tenant.
 
@@ -1146,6 +1270,12 @@ paths:
                 $ref: '#/components/schemas/ApiErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+        '403':
+          description: Forbidden
           content:
             application/json:
               schema:
@@ -1200,6 +1330,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
         '404':
           description: Not Found
           content:
@@ -1237,6 +1373,12 @@ paths:
                 $ref: '#/components/schemas/ApiErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+        '403':
+          description: Forbidden
           content:
             application/json:
               schema:
@@ -1289,6 +1431,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
         '404':
           description: Not Found
           content:
@@ -1337,6 +1485,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
         '404':
           description: Not Found
           content:
@@ -1381,6 +1535,12 @@ paths:
                 $ref: '#/components/schemas/ApiErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+        '403':
+          description: Forbidden
           content:
             application/json:
               schema:
@@ -1438,6 +1598,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
         '404':
           description: Not Found
           content:
@@ -1473,6 +1639,12 @@ paths:
           description: No Content
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+        '403':
+          description: Forbidden
           content:
             application/json:
               schema:
@@ -1541,11 +1713,28 @@ components:
       title: DataResponse[dict[str, bool]]
       type: object
     ApiErrorBody:
+      description: 'What went wrong. Clients branch on ``code``, never on ``message``.
+
+
+        Every 400 carries ``details.issues``, a list of ``{ path, message }``, whatever
+        the
+
+        mistake was: an invalid field (``path`` is the field, dotted for a nested
+        one), an
+
+        invalid path parameter (``path: version``), a body that is not valid JSON
+        or is not sent
+
+        as JSON (``path`` empty), or a request the backend refused (``path`` empty,
+        the message
+
+        repeated). A 400 may carry other keys in ``details`` next to ``issues``.'
       properties:
         code:
           enum:
           - BAD_REQUEST
           - UNAUTHORIZED
+          - FORBIDDEN
           - NOT_FOUND
           - CONFLICT
           - INVALID_STATUS_TRANSITION
@@ -1654,6 +1843,10 @@ components:
               type: string
             type: array
           - type: 'null'
+          description: 'Applies on top of mostRecentActiveVersion, which defaults
+            to true and keeps one row per key: its newest draft or active version.
+            That row is never inactive or archived, so to find inactive or archived
+            versions send mostRecentActiveVersion=false as well.'
           title: Status
         createdAtFrom:
           anyOf:
@@ -1894,6 +2087,7 @@ components:
           title: Pagesize
           type: integer
         hasMore:
+          description: True when the next page has at least one row.
           title: Hasmore
           type: boolean
       required:
@@ -2433,6 +2627,7 @@ components:
           title: Pagesize
           type: integer
         hasMore:
+          description: True when the next page has at least one row.
           title: Hasmore
           type: boolean
       required:

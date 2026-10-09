@@ -253,6 +253,18 @@ def test_tag_pages_are_one_indexed(
     assert first["hasMore"] is True
 
 
+def test_a_tag_list_that_exactly_fills_its_last_page_offers_no_next_page(
+    get: ReadRequest, backend: InMemoryTemplateManagerBackend
+) -> None:
+    backend.get_or_create_tags(["Alpha", "Beta", "Gamma", "Delta"])
+
+    first = get("/api/v1/tags?page=1&pageSize=2").json()
+    last = get("/api/v1/tags?page=2&pageSize=2").json()
+
+    assert (len(first["data"]), first["hasMore"]) == (2, True)
+    assert (len(last["data"]), last["hasMore"]) == (2, False)
+
+
 def test_tags_can_be_narrowed_by_status(
     get: ReadRequest, backend: InMemoryTemplateManagerBackend
 ) -> None:

@@ -18,7 +18,7 @@ All timestamps are ISO-8601 strings in UTC, and are ``null`` when unset -- never
 
 from typing import Generic, Literal, TypeVar
 
-from ninja import Schema
+from ninja import Field, Schema
 
 from pydantic import JsonValue
 
@@ -58,6 +58,7 @@ TemplateOrderDirection = Literal["asc", "desc"]
 ApiErrorCode = Literal[
     "BAD_REQUEST",
     "UNAUTHORIZED",
+    "FORBIDDEN",
     "NOT_FOUND",
     "CONFLICT",
     "INVALID_STATUS_TRANSITION",
@@ -203,9 +204,9 @@ class PaginatedResponse(Schema, Generic[T]):
     data: list[T]
     page: int
     pageSize: int
-    # True when the page came back full, meaning another page may exist. The template
-    # manager seam has no count method, so no total is available.
-    hasMore: bool
+    # Never true for an empty next page: a list that exactly fills its last page reports
+    # false there. The template manager seam has no count method, so no total is available.
+    hasMore: bool = Field(description="True when the next page has at least one row.")
 
 
 class DataResponse(Schema, Generic[T]):
@@ -226,6 +227,15 @@ class HealthOut(Schema):
 
 
 class ApiErrorBody(Schema):
+    """What went wrong. Clients branch on ``code``, never on ``message``.
+
+    Every 400 carries ``details.issues``, a list of ``{ path, message }``, whatever the
+    mistake was: an invalid field (``path`` is the field, dotted for a nested one), an
+    invalid path parameter (``path: version``), a body that is not valid JSON or is not sent
+    as JSON (``path`` empty), or a request the backend refused (``path`` empty, the message
+    repeated). A 400 may carry other keys in ``details`` next to ``issues``.
+    """
+
     code: ApiErrorCode
     message: str
     # Optional machine-readable context, such as field issues. `JsonValue` rather than

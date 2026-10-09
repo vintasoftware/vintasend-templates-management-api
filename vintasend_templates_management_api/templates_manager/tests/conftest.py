@@ -6,8 +6,10 @@ validation, filter negotiation, lifecycle rules and serialization without needin
 database or a template engine.
 """
 
+import re
 from collections.abc import Iterator, Mapping
-from typing import TYPE_CHECKING, Callable, Protocol
+from functools import cache
+from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 from django.test import Client
 
@@ -16,6 +18,7 @@ from pydantic import JsonValue
 from vintasend_managed_templates.managed_template_renderer import ManagedTemplateRenderer
 from vintasend_managed_templates.managed_template_service import ManagedTemplateService
 
+from ..management.commands.export_openapi import build_schema
 from ..service import ServiceCaller, set_service_caller
 from .fakes import (
     AUTH_HEADERS,
@@ -125,9 +128,57 @@ def default_service(install_service: Callable[..., ManagedTemplateService]) -> N
     install_service()
 
 
+# --- every refusal is one the contract declares ------------------------------------------
+#
+# The error statuses in `openapi.yaml` are declared by hand, route by route, in `api.py`. A
+# route that can answer a status it does not declare is a contract a generated client cannot
+# handle -- and nothing else notices, because the server still answers. So every response a
+# test receives is checked against its operation's declarations.
+
+
+@cache
+def declared_statuses() -> dict[tuple[str, str], frozenset[str]]:
+    """(method, OpenAPI path) -> the status codes that operation declares."""
+    operations: dict[str, dict[str, Any]] = build_schema()["paths"]
+    return {
+        (method.upper(), path): frozenset(str(code) for code in operation["responses"])
+        for path, methods in operations.items()
+        for method, operation in methods.items()
+    }
+
+
+def undeclared_status(method: str, route: str, status: int) -> str | None:
+    """Why ``status`` breaks the contract for the route Django matched, or None if it does not.
+
+    Only client errors are checked. A 500 is the generic answer to anything unexpected and is
+    documented once, not per route, and a route no operation names is not the contract's.
+    """
+    if not 400 <= status < 500:
+        return None
+    path = "/" + re.sub(r"<(?:\w+:)?(\w+)>", r"{\1}", route)
+    declared = declared_statuses().get((method, path))
+    if declared is None or str(status) in declared:
+        return None
+    return f"{method} {path} answered {status}, which it does not declare ({sorted(declared)})"
+
+
+class ContractClient(Client):
+    """A test client that fails a test on a response its operation does not declare."""
+
+    def request(self, **request: Any) -> "TestResponse":
+        response: TestResponse = super().request(**request)
+        match = response.wsgi_request.resolver_match
+        if match is not None and match.route:
+            problem = undeclared_status(
+                response.wsgi_request.method or "", match.route, response.status_code
+            )
+            assert problem is None, problem
+        return response
+
+
 @pytest.fixture
 def client() -> Client:
-    return Client()
+    return ContractClient()
 
 
 def _with_auth(headers: Mapping[str, str] | None) -> dict[str, str]:

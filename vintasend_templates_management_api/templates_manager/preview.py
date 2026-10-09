@@ -73,20 +73,25 @@ def build_template_preview(
 ) -> TemplatePreviewOut:
     """Render ``template`` with ``context`` and shape the result for the wire.
 
+    Composed first, through the service caller, so the two failures a broken template can
+    have come back under different codes: one that cannot be composed is a
+    ``TEMPLATE_COMPOSITION_ERROR`` (409), exactly as ``GET /composition`` reports it. Composing
+    reads the store, and a store failure there is not translated -- it is a 500, so a
+    backend's message never reaches the client.
+
     A rendering failure is reported as ``PREVIEW_UNAVAILABLE`` (409) rather than a 500: a
     template that does not compile, or a context missing a variable the template needs, is
     a fact about the *template being previewed*, which is exactly what the caller asked to
     find out. Letting it fall through as an internal error would hide the message that
-    makes the draft fixable.
+    makes the draft fixable. Only the render is caught, so nothing else is reported that way.
     """
+    composed = service.compose_template(template)
     try:
         rendered = service.render_template(
             build_preview_notification(template),
-            template,
+            composed,
             _as_context(context),
         )
-    except ApiError:
-        raise
     except Exception as error:
         raise ApiError.preview_unavailable(
             f"Template '{template.key}' v{template.version} could not be rendered: {error}"
