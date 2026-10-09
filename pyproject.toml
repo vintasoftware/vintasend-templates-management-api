@@ -1,6 +1,6 @@
 [project]
 name = "vintasend-templates-management-api"
-version = "3.4.0"
+version = "3.5.0"
 description = "REST API that exposes a VintaSend ManagedTemplateService over HTTP for template-management UIs"
 authors = [{ name = "Vinta Software", email = "contact@vinta.com.br" }]
 license = "MIT"
@@ -56,8 +56,8 @@ exclude = ["vintasend_templates_management_api/templates_manager/tests"]
 include = [{ path = "openapi.yaml", format = "sdist" }]
 
 [tool.poetry.dependencies]
-vintasend = "3.4.0"
-vintasend-managed-templates = "3.4.0"
+vintasend = "3.5.0"
+vintasend-managed-templates = "3.5.0"
 django = ">=4.2,<6.0"
 django-ninja = "^1.4.3"
 # openapi.yaml is generated from the live route table by `manage.py export_openapi`.
