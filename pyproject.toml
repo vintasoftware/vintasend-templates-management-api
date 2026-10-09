@@ -11,9 +11,50 @@ requires-python = ">=3.10,<3.15"
 # Constraints stay under [tool.poetry.dependencies] to keep caret syntax, which
 # is not valid PEP 621. 'dynamic' tells build tooling the real list lives there.
 dynamic = ["dependencies"]
+keywords = ["vintasend", "notifications", "templates", "django", "django-ninja", "rest-api"]
+# Listed in full: a static list here is used as written, so the Python versions are spelled
+# out to match `requires-python` and the tox matrix rather than generated.
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Web Environment",
+    "Framework :: Django",
+    "Framework :: Django :: 4.2",
+    "Framework :: Django :: 5.0",
+    "Framework :: Django :: 5.1",
+    "Framework :: Django :: 5.2",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Communications :: Email",
+    "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+]
+
+[project.urls]
+Homepage = "https://github.com/vintasoftware/vintasend-templates-management-api"
+Repository = "https://github.com/vintasoftware/vintasend-templates-management-api"
+Issues = "https://github.com/vintasoftware/vintasend-templates-management-api/issues"
+Changelog = "https://github.com/vintasoftware/vintasend/blob/main/RELEASE_NOTES.md"
 
 [tool.poetry]
-package-mode = false
+# The importable package is the whole distribution: the embeddable app, the bundled
+# standalone project (settings, urls, wsgi, asgi) and the `export_openapi` management command.
+# `manage.py` at the repository root is a development convenience and is not shipped; an
+# installed standalone deployment runs `django-admin` with DJANGO_SETTINGS_MODULE instead.
+packages = [{ include = "vintasend_templates_management_api" }]
+# The suite stays in the repository: a host installs the app, not its tests, and the tests'
+# fakes and test-only URLconf would otherwise be importable from site-packages.
+exclude = ["vintasend_templates_management_api/templates_manager/tests"]
+# `openapi.yaml` ships in the sdist only, as part of the source it is generated from, and not
+# in the wheel. At runtime the app serves the same contract itself (`api/v1/openapi.json`, built
+# from the same routes), so a copy in site-packages would be a second, unused source of truth.
+# Shipping it in the wheel would also mean moving it inside the package, where nothing reads it.
+include = [{ path = "openapi.yaml", format = "sdist" }]
 
 [tool.poetry.dependencies]
 vintasend = "3.4.0"

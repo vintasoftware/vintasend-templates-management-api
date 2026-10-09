@@ -12,7 +12,6 @@ import logging
 from collections.abc import Sequence
 from typing import TypeVar
 
-from django.conf import settings
 from django.http import Http404, HttpRequest, HttpResponse, JsonResponse
 from ninja import NinjaAPI, Path, Query, Schema, Status
 from ninja.errors import AuthenticationError, HttpError, ValidationError
@@ -26,10 +25,12 @@ from vintasend_managed_templates.dataclasses import (
     ManagedTemplateUpdateInput,
 )
 
+from . import conf
 from .auth import ApiKeyAuth
 from .bodies import JsonBodyParser, refuse_an_empty_json_body
 from .contract import (
     API_VERSION,
+    URLS_NAMESPACE,
     ApiErrorResponse,
     DataResponse,
     HealthOut,
@@ -131,7 +132,7 @@ api = NinjaAPI(
         "HTTP contract for managing VintaSend notification templates: their versions, "
         "their status lifecycle, and previewing a version before it is published."
     ),
-    urls_namespace="vintasend_templates_management_api",
+    urls_namespace=URLS_NAMESPACE,
     auth=ApiKeyAuth(),
     parser=JsonBodyParser(),
     docs_url="/docs",
@@ -157,10 +158,10 @@ def handle_api_error(request: HttpRequest, exc: ApiError) -> HttpResponse:
 
 @api.exception_handler(AuthenticationError)
 def handle_authentication_error(request: HttpRequest, exc: AuthenticationError) -> HttpResponse:
-    """Covers a missing or non-bearer ``Authorization`` header.
+    """A backstop: Ninja raises this when an auth hook answers falsy.
 
-    A wrong key never reaches here -- ``ApiKeyAuth`` raises ``ApiError`` itself -- but a
-    header Ninja cannot parse as a bearer token is rejected before the auth class runs.
+    ``ApiKeyAuth`` never does -- it raises ``ApiError`` itself, whether the shared key or a
+    host authenticator refused the caller -- so this only keeps the envelope if that changes.
     """
     return _envelope(request, "UNAUTHORIZED", "A valid API key is required.")
 
@@ -402,9 +403,7 @@ def create_template(request: HttpRequest, payload: CreateTemplateBody) -> Status
             key=payload.key,
             name=payload.name,
             description=payload.description,
-            template_managed_backend=(
-                settings.MANAGED_TEMPLATE_BACKEND_NAME or payload.templateManagedBackend
-            ),
+            template_managed_backend=(conf.backend_name() or payload.templateManagedBackend),
             template_body=payload.bodyTemplate,
             template_subject=payload.subjectTemplate,
             template_preheader=payload.preheaderTemplate,
@@ -865,7 +864,7 @@ def delete_template(request: HttpRequest, key: str, query: Query[VersionQuery]) 
 
 health_api = NinjaAPI(
     version="health",
-    urls_namespace="vintasend_templates_management_api_health",
+    urls_namespace=f"{URLS_NAMESPACE}_health",
     auth=None,
     docs_url=None,
 )

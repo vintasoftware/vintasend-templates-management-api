@@ -361,7 +361,7 @@ scrubbing instead (see [Unexpected errors](#unexpected-errors)).
 
 ## Authentication
 
-Every `/api/v1` request must carry the shared secret:
+By default, every `/api/v1` request must carry the shared secret:
 
 ```
 Authorization: Bearer $VINTASEND_API_KEY
@@ -371,7 +371,135 @@ Call this API from your UI's own server side so the key never reaches a browser.
 do need to call it from a browser, set `VINTASEND_API_CORS_ORIGINS` to the allowed
 origins — and put a per-user auth layer in front of it first.
 
+A host that knows its callers sets `VINTASEND_API_AUTHENTICATOR` instead, and the shared key
+is then neither checked nor required. See [Authenticating callers yourself](#authenticating-callers-yourself).
+
+## Installing and embedding
+
+The package is a Django app, so the API can run inside a Django project you already deploy
+rather than as a service of its own:
+
+```bash
+pip install vintasend-templates-management-api
+```
+
+Add the app and include its URLconf under a prefix of your choosing:
+
+```python
+# settings.py
+INSTALLED_APPS = [
+    # ...
+    "vintasend_templates_management_api.templates_manager.apps.TemplatesManagerConfig",
+]
+```
+
+```python
+# urls.py
+from django.urls import include, path
+
+urlpatterns = [
+    # ...
+    path("templates-api/", include("vintasend_templates_management_api.templates_manager.urls")),
+]
+```
+
+That serves `/templates-api/health` and `/templates-api/api/v1/...`. The routes are the same as
+in the standalone project, under your prefix. Include the URLconf once per project. The main
+API's URL namespace is `vintasend_templates_management_api`, so its routes reverse as
+`vintasend_templates_management_api:<name>` and do not collide with
+[`vintasend-api`](https://github.com/vintasoftware/vintasend-api)'s when one project mounts both.
+
+The app reads these settings from your settings module. Each has a default, so leave out what
+you do not use:
+
+| Setting | Required | Default | Description |
+| --- | --- | --- | --- |
+| `MANAGED_TEMPLATE_SERVICE_FACTORY` | yes | `""` | Dotted path to the callable building your service. See [Configuring your service](#configuring-your-service). |
+| `VINTASEND_API_KEY` | unless an authenticator is set | `""` | Shared secret clients send as a bearer token. |
+| `VINTASEND_API_AUTHENTICATOR` | no | unset | `(request) -> None`, replacing the shared-key check. See below. |
+| `MANAGED_TEMPLATE_BACKEND_NAME` | no | `""` | Backend name every new template is stored under. See [Backend name](#backend-name). |
+| `MANAGED_TEMPLATE_ACTOR_RESOLVER` | no | unset | `(request) -> str \| None`, who made a status change. See [Attribution](#attribution). |
+| `MANAGED_TEMPLATE_UNHANDLED_ERROR_HANDLER` | no | unset | `(exc, request, request_id) -> None`. See [Unexpected errors](#unexpected-errors). |
+| `VINTASEND_API_CORS_ORIGINS` | no | `[]` | Browser origins allowed to call the API, as a list. Only read by the optional CORS middleware. |
+
+The three callables take a dotted path or the callable itself. The required settings, and a
+callable that cannot be imported, fail `manage.py check`, the same as in the standalone project.
+
+Nothing else from the standalone project is needed: not its settings module, its middleware or
+its `handler404`. Two of those are optional extras:
+
+- **CORS.** Add `"vintasend_templates_management_api.templates_manager.cors.CorsMiddleware"` to
+  `MIDDLEWARE` only if a browser calls the API directly. It applies to the API's routes under
+  whatever prefix you mount them, and to nothing else your project serves.
+- **A JSON 404.** Errors from the API's routes always use the `{ error }` envelope. A path that
+  matches no route at all gets your project's 404 page. To answer those in the envelope too, set
+  `handler404 = "vintasend_templates_management_api.templates_manager.views.envelope_404"` in
+  your root URLconf. It applies to every unmatched path in your project, not only the API's.
+
+### Authenticating callers yourself
+
+`VINTASEND_API_AUTHENTICATOR` names a callable `(request) -> None` that runs before every
+`/api/v1` route. Return to let the request through. Raise `ApiError("UNAUTHORIZED", ...)` for a
+caller with no valid credential and `ApiError("FORBIDDEN", ...)` for one you know and refuse: a
+401 would tell a signed-in user to sign in again. Both reach the client in the contract's error
+envelope. The callable may be `async`. `/health` is never authenticated.
+
+To check a token yourself, such as one your identity provider issued, read it with
+`bearer_token`. It takes the request or the header's value, matches the `Bearer` scheme in any
+case, and returns `None` when there is no token:
+
+```python
+# myproject/templates_api.py
+from vintasend_templates_management_api.templates_manager.auth import ApiError, bearer_token
+
+
+def authenticate(request):
+    token = bearer_token(request)
+    user = verify_token(token) if token is not None else None   # your own verification
+    if user is None:
+        raise ApiError.unauthorized("Sign in to manage templates.")
+    if not user.can_edit_templates:
+        raise ApiError.forbidden("You cannot manage templates.")
+    request.templates_user = user   # for the actor resolver below
+
+
+def resolve_actor(request):
+    return request.templates_user.email
+```
+
+```python
+# settings.py
+VINTASEND_API_AUTHENTICATOR = "myproject.templates_api.authenticate"
+MANAGED_TEMPLATE_ACTOR_RESOLVER = "myproject.templates_api.resolve_actor"
+```
+
+The authenticator only decides who may call. Who made a status change is still
+`MANAGED_TEMPLATE_ACTOR_RESOLVER`'s answer, as in [Attribution](#attribution).
+
+The setting has the same name and shape in `vintasend-api`, so a project mounting both can
+point them at one function.
+
+## Running it on its own
+
+The package also carries a complete Django project, for a deployment that runs the API as a
+service of its own. Configure it through environment variables (see
+[Environment variables](#environment-variables)), or through a `.env` file in the directory you
+start it from. The project does not depend on a WSGI server, so install one alongside it:
+
+```bash
+pip install vintasend-templates-management-api gunicorn
+export DJANGO_SETTINGS_MODULE=vintasend_templates_management_api.settings
+django-admin check                          # fails on missing or unusable settings
+gunicorn vintasend_templates_management_api.wsgi:application --bind 0.0.0.0:3334
+```
+
+Your service factory must be importable by the process, so install it as a package or put its
+directory on `PYTHONPATH`. `vintasend_templates_management_api.asgi:application` is there for an
+ASGI server, though the API is synchronous throughout.
+
 ## Getting started
+
+To work on the API itself, from a checkout:
 
 ```bash
 poetry install
@@ -407,8 +535,9 @@ def create_template_service():
 
 Start from
 [`vintasend_config.example.py`](./vintasend_templates_management_api/vintasend_config.example.py),
-copying it to `vintasend_templates_management_api/vintasend_config.py` (gitignored). The factory is
-called once per process and its result reused, so it must be safe to call once and the
+copying it to `vintasend_templates_management_api/vintasend_config.py` (gitignored) in a checkout.
+With the package installed, the factory lives in any module of yours the process can import,
+such as `myproject.templates_api.create_template_service`. The factory is called once per process and its result reused, so it must be safe to call once and the
 service it returns must be safe to share across requests.
 
 Only the preview endpoint uses the renderer, so a deployment that never previews can pass
@@ -473,7 +602,8 @@ and enforced through the same 409.
 
 | Variable | Required | Description |
 | --- | --- | --- |
-| `VINTASEND_API_KEY` | yes | Shared secret clients must send as a bearer token. |
+| `VINTASEND_API_KEY` | unless an authenticator is set | Shared secret clients must send as a bearer token. |
+| `VINTASEND_API_AUTHENTICATOR` | no | Dotted path to `(request) -> None`, replacing the shared-key check. See [Authenticating callers yourself](#authenticating-callers-yourself). |
 | `MANAGED_TEMPLATE_SERVICE_FACTORY` | yes | Dotted path to the callable building your service. |
 | `VINTASEND_API_CORS_ORIGINS` | no | Comma-separated browser origins allowed to call the API. |
 | `MANAGED_TEMPLATE_BACKEND_NAME` | no | Backend name every new template is stored under, replacing the create body's. See [Backend name](#backend-name). |
@@ -483,8 +613,8 @@ and enforced through the same 409.
 | `DJANGO_DEBUG` / `DJANGO_ALLOWED_HOSTS` / `DJANGO_LOG_LEVEL` | no | Standard Django knobs. |
 | `DJANGO_DB_*` | no | Only needed by backends that resolve their models through Django. |
 
-The first two are enforced by a Django system check, so a deployment missing either fails
-on `manage.py check` and on `runserver` rather than on the first request. The two hooks are
+The required ones are enforced by a Django system check, so a deployment missing one fails
+on `manage.py check` and on `runserver` rather than on the first request. The three hooks are
 checked the same way: a dotted path that does not import, or names something that is not
 callable, fails the check. Run
 `manage.py check` in your release step if you serve with gunicorn.
