@@ -12,6 +12,7 @@ import logging
 from collections.abc import Sequence
 from typing import TypeVar
 
+from django.conf import settings
 from django.http import Http404, HttpRequest, HttpResponse, JsonResponse
 from ninja import NinjaAPI, Path, Query, Schema, Status
 from ninja.errors import AuthenticationError, HttpError, ValidationError
@@ -392,13 +393,18 @@ def create_template(request: HttpRequest, payload: CreateTemplateBody) -> Status
     a new version is behaving legitimately. Use ``POST /templates/{key}/versions`` when you
     mean "next version of this key".
     """
+    # The host's MANAGED_TEMPLATE_BACKEND_NAME, when set, is the backend name stored, replacing
+    # the body's. Kept out of the docstring above, which is the operation's description in
+    # `openapi.yaml`. The body field stays required either way, so the contract does not change.
     service = get_service_caller()
     template = service.create_template(
         ManagedTemplateCreateInput(
             key=payload.key,
             name=payload.name,
             description=payload.description,
-            template_managed_backend=payload.templateManagedBackend,
+            template_managed_backend=(
+                settings.MANAGED_TEMPLATE_BACKEND_NAME or payload.templateManagedBackend
+            ),
             template_body=payload.bodyTemplate,
             template_subject=payload.subjectTemplate,
             template_preheader=payload.preheaderTemplate,
