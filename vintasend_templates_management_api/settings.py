@@ -103,6 +103,11 @@ VINTASEND_API_CORS_ORIGINS = _env_list("VINTASEND_API_CORS_ORIGINS")
 # Dotted path to a callable returning a configured ManagedTemplateService.
 MANAGED_TEMPLATE_SERVICE_FACTORY = _env("MANAGED_TEMPLATE_SERVICE_FACTORY")
 
+# Optional. The backend name every new template is stored under. When set, it replaces the
+# `templateManagedBackend` in a create request body, so a host serving one backend does not let
+# a caller label a template with another. The field stays required in the request either way.
+MANAGED_TEMPLATE_BACKEND_NAME = _env("MANAGED_TEMPLATE_BACKEND_NAME")
+
 # Optional. Dotted path to a callable `(request) -> str | None` naming who made a status change.
 # When set, it replaces any `changedBy` in the request body. See templates_manager/hooks.py.
 MANAGED_TEMPLATE_ACTOR_RESOLVER = _env("MANAGED_TEMPLATE_ACTOR_RESOLVER")

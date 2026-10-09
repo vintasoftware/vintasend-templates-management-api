@@ -152,6 +152,57 @@ def test_without_a_resolver_changed_by_still_comes_from_the_body(
     assert _recorded_actors(backend) == ["from-the-body"]
 
 
+# --- backend name -----------------------------------------------------------------------
+
+
+CREATE_BODY = {
+    "key": "welcome-email",
+    "name": "Welcome",
+    "templateManagedBackend": "somewhere-else",
+    "bodyTemplate": "<p>Hi {{ name }}</p>",
+}
+
+
+def test_a_configured_backend_name_replaces_the_one_in_the_body(
+    post: WriteRequest, backend: InMemoryTemplateManagerBackend, settings: "LazySettings"
+) -> None:
+    settings.MANAGED_TEMPLATE_BACKEND_NAME = "medplum"
+
+    response = post("/api/v1/templates", CREATE_BODY)
+
+    assert response.status_code == 201
+    assert response.json()["data"]["templateManagedBackend"] == "medplum"
+    assert [template.template_managed_backend for template in backend.templates] == ["medplum"]
+
+
+def test_without_a_backend_name_the_body_names_the_backend(
+    post: WriteRequest, backend: InMemoryTemplateManagerBackend, settings: "LazySettings"
+) -> None:
+    settings.MANAGED_TEMPLATE_BACKEND_NAME = ""
+
+    response = post("/api/v1/templates", CREATE_BODY)
+
+    assert response.status_code == 201
+    assert response.json()["data"]["templateManagedBackend"] == "somewhere-else"
+    assert [template.template_managed_backend for template in backend.templates] == [
+        "somewhere-else"
+    ]
+
+
+def test_a_configured_backend_name_leaves_the_field_required(
+    post: WriteRequest, backend: InMemoryTemplateManagerBackend, settings: "LazySettings"
+) -> None:
+    """The contract does not change with the setting, so clients written against it agree."""
+    settings.MANAGED_TEMPLATE_BACKEND_NAME = "medplum"
+    body = {name: value for name, value in CREATE_BODY.items() if name != "templateManagedBackend"}
+
+    response = post("/api/v1/templates", body)
+
+    assert response.status_code == 400
+    assert response.json()["error"]["details"]["issues"][0]["path"] == "templateManagedBackend"
+    assert backend.templates == []
+
+
 # --- unhandled errors -------------------------------------------------------------------
 
 

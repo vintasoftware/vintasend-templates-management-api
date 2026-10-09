@@ -121,6 +121,9 @@ Conventions a client can rely on:
 - **`changedBy` in a status body is only a fallback.** A host that knows who is calling sets
   `MANAGED_TEMPLATE_ACTOR_RESOLVER` (see [Attribution](#attribution)), and its answer replaces
   whatever the body says.
+- **`templateManagedBackend` in a create body can be overridden by the host.** A host serving one
+  backend sets `MANAGED_TEMPLATE_BACKEND_NAME` (see [Backend name](#backend-name)), and every new
+  template is stored under it, whatever the body says.
 - Timestamps are ISO-8601 UTC strings, `null` when unset — never absent.
 - Errors always use the envelope `{ "error": { "code", "message", "details"? } }`.
 
@@ -434,6 +437,19 @@ record, and any `changedBy` in the body is ignored. `None` records the change as
 The resolver may be `async`. The body field stays optional in the contract, so existing clients
 keep working. In `settings.py` you can also assign the callable itself rather than a dotted path.
 
+### Backend name
+
+`POST /templates` stores the `templateManagedBackend` its body carries. A host that serves one
+template backend sets `MANAGED_TEMPLATE_BACKEND_NAME`, and every new template is stored under that
+name instead, so a caller cannot label a template with another backend:
+
+```bash
+MANAGED_TEMPLATE_BACKEND_NAME=medplum
+```
+
+Unset, the body's value is stored. The body field stays required either way, so clients written
+against the contract keep working.
+
 ### Unexpected errors
 
 `MANAGED_TEMPLATE_UNHANDLED_ERROR_HANDLER` names a callable `(exc, request, request_id) -> None`
@@ -460,6 +476,7 @@ and enforced through the same 409.
 | `VINTASEND_API_KEY` | yes | Shared secret clients must send as a bearer token. |
 | `MANAGED_TEMPLATE_SERVICE_FACTORY` | yes | Dotted path to the callable building your service. |
 | `VINTASEND_API_CORS_ORIGINS` | no | Comma-separated browser origins allowed to call the API. |
+| `MANAGED_TEMPLATE_BACKEND_NAME` | no | Backend name every new template is stored under, replacing the create body's. See [Backend name](#backend-name). |
 | `MANAGED_TEMPLATE_ACTOR_RESOLVER` | no | Dotted path to `(request) -> str \| None`, who made a status change. See [Attribution](#attribution). |
 | `MANAGED_TEMPLATE_UNHANDLED_ERROR_HANDLER` | no | Dotted path to `(exc, request, request_id) -> None`. See [Unexpected errors](#unexpected-errors). |
 | `DJANGO_SECRET_KEY` | no | Django requires one; this API signs nothing. |
