@@ -1587,14 +1587,14 @@ zstd = ["backports-zstd (>=1.0.0)"]
 
 [[package]]
 name = "vintasend"
-version = "3.3.0"
+version = "3.4.0"
 description = "A flexible package for implementing transactional notifications"
 optional = false
 python-versions = "<3.15,>=3.10"
 groups = ["main"]
 files = [
-    {file = "vintasend-3.3.0-py3-none-any.whl", hash = "sha256:2faace8f4e0e2f8edfeffd43e58dd2f8b8b4564f12654d9f6a18f5772a05fad0"},
-    {file = "vintasend-3.3.0.tar.gz", hash = "sha256:15516b1afa8f6bfdfa84ca914e2a579aeebb98b5944edca56cfe34d9aad77660"},
+    {file = "vintasend-3.4.0-py3-none-any.whl", hash = "sha256:03bb088a075dd2cd161fa08ac39b2329ba51e6b1c581d1ddcc7f53a68d08da72"},
+    {file = "vintasend-3.4.0.tar.gz", hash = "sha256:d85017680ff2d4fe38d204af18670251fb10daf0cc838bb3fd571e4797dfccb3"},
 ]
 
 [package.dependencies]
@@ -1603,19 +1603,19 @@ typing-extensions = ">=4.10.0"
 
 [[package]]
 name = "vintasend-managed-templates"
-version = "3.3.0"
+version = "3.4.0"
 description = "Starting point for a new vintasend-* implementation package: one TODO stub per seam, ready to clone."
 optional = false
 python-versions = "<3.15,>=3.10"
 groups = ["main"]
 files = [
-    {file = "vintasend_managed_templates-3.3.0-py3-none-any.whl", hash = "sha256:bf3f6db4376a23cd4ebf5d714397f561874a803162eb879bddda2ad3223617e3"},
-    {file = "vintasend_managed_templates-3.3.0.tar.gz", hash = "sha256:76b9e56c4c64c5bf8966982631a5d1adb871fa828ac496c1d8f2561074098690"},
+    {file = "vintasend_managed_templates-3.4.0-py3-none-any.whl", hash = "sha256:5bc31dc68467f4e7e41a61b73225aba757435065f0e1cde7f2e01779e2e0808d"},
+    {file = "vintasend_managed_templates-3.4.0.tar.gz", hash = "sha256:17a15903ac2563b879f1acbf7e81c1a032cce25578b2909bd970790dd272cf66"},
 ]
 
 [package.dependencies]
 typing-extensions = ">=4.10.0"
-vintasend = "3.3.0"
+vintasend = "3.4.0"
 
 [[package]]
 name = "virtualenv"
@@ -1639,4 +1639,4 @@ typing-extensions = {version = ">=4.13.2", markers = "python_version < \"3.11\""
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.15"
-content-hash = "3a6224c39b38d797b5a11863679af7e59b56cc35212ba9d52fab1a6610f250ff"
+content-hash = "e54d69c39026accf1b7c3e0b7328c74cd8f37e3f39c28899d8e090b5f9eae391"
