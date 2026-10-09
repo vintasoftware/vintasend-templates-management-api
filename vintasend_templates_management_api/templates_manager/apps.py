@@ -1,9 +1,9 @@
 """App configuration, including the startup checks that make a bad deployment fail fast."""
 
 from django.apps import AppConfig
-from django.conf import settings
 from django.core.checks import Error, register
 
+from . import conf
 from .hooks import configured_hook
 
 
@@ -21,22 +21,29 @@ def check_api_configuration(app_configs: object, **kwargs: object) -> list[Error
     stays usable and the message arrives as a readable checklist. Both ``runserver`` and
     ``manage.py check`` run these; ``gunicorn`` deployments should run ``manage.py check``
     in their release step to get the same guarantee.
+
+    The shared key is only required when no ``VINTASEND_API_AUTHENTICATOR`` replaces it. An
+    authenticator that cannot be used is reported as E005 and not as a missing key as well:
+    one mistake, one error.
     """
     errors: list[Error] = []
 
-    if not settings.VINTASEND_API_KEY:
+    authenticator_configured = bool(conf.hook_setting(conf.AUTHENTICATOR))
+
+    if not authenticator_configured and not conf.api_key():
         errors.append(
             Error(
                 "VINTASEND_API_KEY is not set.",
                 hint=(
                     "Every /api/v1 request must present this as a bearer token. Set it to "
-                    "a long random string shared with the clients that call this API."
+                    "a long random string shared with the clients that call this API, or "
+                    "set VINTASEND_API_AUTHENTICATOR to authenticate callers yourself."
                 ),
                 id="vintasend_templates_management_api.E001",
             )
         )
 
-    if not settings.MANAGED_TEMPLATE_SERVICE_FACTORY:
+    if not conf.service_factory():
         errors.append(
             Error(
                 "MANAGED_TEMPLATE_SERVICE_FACTORY is not set.",
@@ -51,8 +58,9 @@ def check_api_configuration(app_configs: object, **kwargs: object) -> list[Error
         )
 
     for setting_name, check_id in (
-        ("MANAGED_TEMPLATE_ACTOR_RESOLVER", "vintasend_templates_management_api.E003"),
-        ("MANAGED_TEMPLATE_UNHANDLED_ERROR_HANDLER", "vintasend_templates_management_api.E004"),
+        (conf.ACTOR_RESOLVER, "vintasend_templates_management_api.E003"),
+        (conf.UNHANDLED_ERROR_HANDLER, "vintasend_templates_management_api.E004"),
+        (conf.AUTHENTICATOR, "vintasend_templates_management_api.E005"),
     ):
         try:
             configured_hook(setting_name)

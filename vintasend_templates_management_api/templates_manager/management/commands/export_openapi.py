@@ -53,7 +53,9 @@ class Command(BaseCommand):
             self.stdout.write(document)
             return
 
-        target = Path(settings.BASE_DIR) / options["output"]
+        # The bundled project's BASE_DIR is the checkout, where the committed document
+        # lives. A host project may not define one, so its working directory stands in.
+        target = Path(getattr(settings, "BASE_DIR", None) or Path.cwd()) / options["output"]
 
         if options["check"]:
             current = target.read_text() if target.exists() else ""

@@ -27,8 +27,6 @@ from collections.abc import Iterable
 from types import TracebackType
 from typing import TYPE_CHECKING, ClassVar, Literal
 
-from django.conf import settings
-
 from vintasend.services.helpers import _import_class
 from vintasend.services.notification_template_renderers.base import NotificationSendInput
 from vintasend_managed_templates.composition import TemplateReference
@@ -56,6 +54,7 @@ from vintasend_managed_templates.exceptions import (
 from vintasend_managed_templates.filters import ManagedTemplateFilter, ManagedTemplateOrderBy
 from vintasend_managed_templates.managed_template_service import ManagedTemplateService
 
+from . import conf
 from .errors import ApiError
 
 
@@ -534,7 +533,7 @@ def get_service_caller() -> ServiceCaller:
         if _cached_caller is not None:
             return _cached_caller
 
-        service = load_template_service(settings.MANAGED_TEMPLATE_SERVICE_FACTORY)
+        service = load_template_service(conf.service_factory())
         _cached_caller = ServiceCaller(service)
         return _cached_caller
 

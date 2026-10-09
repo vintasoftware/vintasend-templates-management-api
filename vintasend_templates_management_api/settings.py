@@ -1,4 +1,8 @@
-"""Django settings for the VintaSend managed-templates API.
+"""Django settings for the VintaSend managed-templates API, run as a project of its own.
+
+Only the standalone project uses this module. A host project that embeds the app sets the
+API's settings in its own settings module instead -- see the README's "Installing and
+embedding" section -- and none of the Django plumbing below is required of it.
 
 This is a deliberately thin Django project. It has no models, no migrations, no admin
 and no user accounts: every template it serves comes from whichever
@@ -13,7 +17,14 @@ import os
 from pathlib import Path
 
 
+# The source checkout's root, where `openapi.yaml` lives. Once the package is installed this
+# is site-packages, so nothing is read from or written to it at runtime: `.env` and the
+# default database live in the working directory instead.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# The directory the process was started from: the checkout in development, the deployment's
+# own directory once the package is installed.
+WORKING_DIR = Path.cwd()
 
 # Development convenience only. Production deployments set real environment variables,
 # and a missing .env is not an error.
@@ -22,7 +33,7 @@ try:
 except ImportError:  # pragma: no cover - python-dotenv is an optional convenience
     pass
 else:
-    load_dotenv(BASE_DIR / ".env")
+    load_dotenv(WORKING_DIR / ".env")
 
 
 def _env(name: str, default: str = "") -> str:
@@ -67,7 +78,7 @@ MIDDLEWARE = [
 DATABASES = {
     "default": {
         "ENGINE": _env("DJANGO_DB_ENGINE") or "django.db.backends.sqlite3",
-        "NAME": _env("DJANGO_DB_NAME") or str(BASE_DIR / "db.sqlite3"),
+        "NAME": _env("DJANGO_DB_NAME") or str(WORKING_DIR / "db.sqlite3"),
         "USER": _env("DJANGO_DB_USER"),
         "PASSWORD": _env("DJANGO_DB_PASSWORD"),
         "HOST": _env("DJANGO_DB_HOST"),
@@ -96,6 +107,10 @@ LOGGING = {
 
 # Shared secret every /api/v1 request must present as `Authorization: Bearer <key>`.
 VINTASEND_API_KEY = _env("VINTASEND_API_KEY")
+
+# Optional. Dotted path to a callable `(request) -> None` that authenticates every /api/v1
+# request in place of the shared key, refusing by raising the app's ApiError. See auth.py.
+VINTASEND_API_AUTHENTICATOR = _env("VINTASEND_API_AUTHENTICATOR")
 
 # Browser origins allowed to call the API. Empty means "server-side clients only".
 VINTASEND_API_CORS_ORIGINS = _env_list("VINTASEND_API_CORS_ORIGINS")

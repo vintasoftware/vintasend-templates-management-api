@@ -1,7 +1,9 @@
 """The two host hooks: who made a status change, and what happens to an unexpected error.
 
 Both are settings naming a callable, as a dotted path (what an environment variable can carry)
-or as the callable itself (what a ``settings.py`` can assign):
+or as the callable itself (what a ``settings.py`` can assign). ``configured_hook`` resolves
+them, and ``VINTASEND_API_AUTHENTICATOR`` too (see ``auth.py``), so all three fail the system
+checks the same way when they cannot be used:
 
 ``MANAGED_TEMPLATE_ACTOR_RESOLVER`` -- ``(request) -> str | None``
     Who is making the request, for the status audit trail. When set, its answer is what every
@@ -29,11 +31,12 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import cast
 
-from django.conf import settings
 from django.http import HttpRequest
 from django.utils.module_loading import import_string
 
 from asgiref.sync import async_to_sync
+
+from . import conf
 
 
 logger = logging.getLogger(__name__)
@@ -54,7 +57,7 @@ def configured_hook(setting_name: str) -> Callable[..., object] | None:
     raises ImportError: if a dotted path cannot be imported.
     raises TypeError: if the setting names something that is not callable.
     """
-    value = getattr(settings, setting_name, None)
+    value = conf.hook_setting(setting_name)
     if not value:
         return None
     hook = import_string(value) if isinstance(value, str) else value
@@ -72,7 +75,7 @@ def resolve_changed_by(request: HttpRequest, body_changed_by: str | None) -> str
     The configured resolver's answer when there is one, ``None`` included; the body's value
     only when no resolver is configured.
     """
-    resolver = configured_hook("MANAGED_TEMPLATE_ACTOR_RESOLVER")
+    resolver = configured_hook(conf.ACTOR_RESOLVER)
     if resolver is None:
         return body_changed_by
     actor = resolver(request)
@@ -127,7 +130,7 @@ def report_unhandled_error(exc: Exception, request: HttpRequest, request_id: str
     into a crash.
     """
     try:
-        handler = configured_hook("MANAGED_TEMPLATE_UNHANDLED_ERROR_HANDLER")
+        handler = configured_hook(conf.UNHANDLED_ERROR_HANDLER)
     except Exception:
         handler = None
     if handler is not None:

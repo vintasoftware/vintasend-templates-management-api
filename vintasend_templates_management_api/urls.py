@@ -1,37 +1,21 @@
-"""URL routing.
+"""URL routing for the bundled project.
 
-``/health`` sits at the root and unauthenticated; everything else lives under
-``/api/v1`` and requires the bearer token.
+The app's own URLconf, included at the root: ``/health`` unauthenticated, everything else
+under ``/api/v1`` behind the bearer token. A host project that embeds the app includes the
+same URLconf under a prefix of its own instead.
 """
 
-from django.http import HttpRequest, HttpResponse, JsonResponse
-from django.urls import path
+from django.urls import include, path
 
-from vintasend_templates_management_api.templates_manager.api import api, health_api
+# Re-exported so the view keeps its old dotted path, which a deployment may reference.
+from vintasend_templates_management_api.templates_manager.views import envelope_404
 
+
+__all__ = ["envelope_404", "handler404", "urlpatterns"]
 
 urlpatterns = [
-    path("", health_api.urls),
-    path("api/v1/", api.urls),
+    path("", include("vintasend_templates_management_api.templates_manager.urls")),
 ]
 
-
-def envelope_404(request: HttpRequest, exception: Exception | None = None) -> HttpResponse:
-    """Serve unmatched paths in the contract's error envelope.
-
-    Paths under ``/api/v1`` are handled by Ninja's own 404 handler, which already uses
-    the envelope. This covers everything else, so a client that mistypes a URL gets the
-    same JSON shape rather than Django's HTML error page.
-    """
-    return JsonResponse(
-        {
-            "error": {
-                "code": "NOT_FOUND",
-                "message": f"No route matches {request.method} {request.path}.",
-            }
-        },
-        status=404,
-    )
-
-
-handler404 = "vintasend_templates_management_api.urls.envelope_404"
+# Unmatched paths answer in the contract's error envelope rather than Django's HTML page.
+handler404 = "vintasend_templates_management_api.templates_manager.views.envelope_404"

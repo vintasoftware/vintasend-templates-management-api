@@ -27,6 +27,11 @@ API_VERSION = "v1"
 
 API_BASE_PATH = f"/api/{API_VERSION}"
 
+# The URL namespace of the main API, unique to this package. Ninja's default, `api-1.0.0`, is
+# derived from the API's version and would collide with vintasend-api's when one project
+# mounts both. Not part of the wire contract: it only names routes for `reverse`.
+URLS_NAMESPACE = "vintasend_templates_management_api"
+
 # The wire spelling of ``ManagedTemplateStatus``. Kept as a literal rather than derived
 # from the enum so a status added to the library is a deliberate contract change here
 # rather than one that appears in responses unannounced.
