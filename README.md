@@ -477,7 +477,10 @@ The authenticator only decides who may call. Who made a status change is still
 `MANAGED_TEMPLATE_ACTOR_RESOLVER`'s answer, as in [Attribution](#attribution).
 
 The setting has the same name and shape in `vintasend-api`, so a project mounting both can
-point them at one function.
+point them at one function, and that function may raise either package's `ApiError`: a refusal
+is recognised by its class name and its code, as the TypeScript packages do, not by its class.
+Only `UNAUTHORIZED` and `FORBIDDEN` count as a refusal; an `ApiError` with any other code, like
+any other exception, is an unexpected error and answers 500.
 
 ## Running it on its own
 
