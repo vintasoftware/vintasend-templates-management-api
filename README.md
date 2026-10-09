@@ -82,8 +82,17 @@ A browsable version of the generated schema is served at `/api/v1/docs`.
 Conventions a client can rely on:
 
 - `page` is **1-indexed**.
-- `hasMore` is `true` when a page comes back full. The template-manager seam has no count
-  method, so no total is available.
+- `hasMore` is `true` when the next page has at least one row, so a list that exactly fills
+  its last page never offers an empty one. The template-manager seam has no count method,
+  so no total is available: after a full page the API reads the one row that would follow
+  it.
+- **Request bodies are JSON.** A request that declares `application/json` (or any
+  `application/*+json`) must carry valid JSON, so an empty body there is a 400. A request
+  that declares no media type, or another one, counts as an omitted body when its body is
+  empty, which is how an all-optional body (`activate`, `deactivate`, `archive`, `preview`,
+  `POST /templates/{key}/versions`) is left out. Anything else is a 400 rather than a guess.
+  `curl -d` sends form encoding unless told otherwise, so pass
+  `-H 'Content-Type: application/json'`.
 - **`GET /templates` lists one row per key by default.** A row in the store is a *version*,
   so the raw read returns a key once per version it has ever had. `mostRecentActiveVersion`
   defaults to `true` and narrows that to each key's current version — the highest-numbered
@@ -162,7 +171,14 @@ GET /api/v1/templates/{key}/versions                 # every version of one key,
 Current means the **highest-numbered `active` or `draft` version**: what is published, plus the
 draft on its way to replacing it. A key whose versions are all `inactive` or `archived` has no
 current version and does not appear in the default listing — ask for
-`mostRecentActiveVersion=false`, or filter by `status`, to see it.
+`mostRecentActiveVersion=false` to see it.
+
+A `status` filter applies on top of the default, so `?status=archived` on its own finds
+nothing: the one row kept per key is never `inactive` or `archived`. Send both:
+
+```
+GET /api/v1/templates?status=archived&mostRecentActiveVersion=false
+```
 
 `false` lifts the restriction rather than inverting it: it lists everything, not only the rows
 the default hides. The complement is a legitimate query in the library's filter vocabulary
@@ -264,8 +280,17 @@ send would.
 A template that cannot be assembled — a base that does not exist, a chain that loops, a
 malformed tag — is a **409 `TEMPLATE_COMPOSITION_ERROR`** carrying the library's message,
 which names the reference chain that broke. It is a 409 and not a 404 because the template
-asked for is there; what it names is not. Previewing the same template is a 409
-`PREVIEW_UNAVAILABLE` for the same reason.
+asked for is there; what it names is not.
+
+Previewing tells the two ways a template can be broken apart by code, so a UI knows whether
+to send the editor to the chain or to the template:
+
+- A template that cannot be assembled is the same **409 `TEMPLATE_COMPOSITION_ERROR`** the
+  composition endpoint gives.
+- A template that assembles but fails to render is a **409 `PREVIEW_UNAVAILABLE`** carrying
+  the renderer's message.
+- A store that fails while assembling is a plain **500 `INTERNAL_ERROR`**: its message stays
+  on the server, and the error goes to the unhandled-error hook.
 
 Two more things worth knowing:
 
@@ -300,14 +325,26 @@ one, and its listing shows both.
 
 | Code | Status | Means |
 | --- | --- | --- |
-| `BAD_REQUEST` | 400 | Invalid input; `details.issues` names the fields. |
+| `BAD_REQUEST` | 400 | Invalid input. See below. |
 | `UNAUTHORIZED` | 401 | Missing or wrong API key. |
+| `FORBIDDEN` | 403 | The caller was authenticated and is not allowed to do this. Declared on every route for hosts that check permissions in front of this API; the API key alone never produces it. |
 | `NOT_FOUND` | 404 | No such template key, or no such version of it. |
 | `CONFLICT` | 409 | The request cannot be applied in the current state: a tag whose text already slugs onto an existing one, or deleting a published version. |
 | `INVALID_STATUS_TRANSITION` | 409 | The lifecycle does not allow that status change. |
 | `PREVIEW_UNAVAILABLE` | 409 | The template could not be rendered; the message says why. |
 | `TEMPLATE_COMPOSITION_ERROR` | 409 | The template could not be assembled — a missing base, a loop, a malformed tag. The message names the chain. |
 | `INTERNAL_ERROR` | 500 | Unexpected failure. Reported generically, with an `X-Request-Id` header; logged as one redacted line. |
+
+Every 400 carries `details.issues`, a list of `{ "path", "message" }`, whatever the mistake
+was, so a client reads one shape:
+
+| Mistake | `path` |
+| --- | --- |
+| An invalid query parameter or body field | the field, dotted when nested |
+| A version in the path that is not a positive integer (`/versions/1abc`) | `version` |
+| A body that is not valid JSON, not a JSON object, or not sent as JSON | empty |
+| An order the backend cannot apply | `orderByField` / `orderByDirection` |
+| A value the backend refused, such as tag text with nothing sluggable in it | empty, repeating the message |
 
 An unexpected error is logged as one line: its class name, the request id, the method and the
 route pattern (`api/v1/templates/<key>/preview`, not the path). Its message, its traceback, the

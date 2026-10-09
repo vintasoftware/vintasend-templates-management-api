@@ -118,7 +118,15 @@ class TemplateListQuery(PaginationQuery):
     version: int | None = Field(None, ge=1)
     # Repeat the parameter to match several statuses at once (`?status=draft&status=active`),
     # which becomes an `in` lookup. A single value becomes an exact match.
-    status: list[TemplateStatus] | None = None
+    status: list[TemplateStatus] | None = Field(
+        None,
+        description=(
+            "Applies on top of mostRecentActiveVersion, which defaults to true and keeps one "
+            "row per key: its newest draft or active version. That row is never inactive or "
+            "archived, so to find inactive or archived versions send "
+            "mostRecentActiveVersion=false as well."
+        ),
+    )
     createdAtFrom: datetime.datetime | None = None
     createdAtTo: datetime.datetime | None = None
     updatedAtFrom: datetime.datetime | None = None

@@ -36,7 +36,7 @@ from vintasend_managed_templates.filters import (
 )
 
 from .capabilities import order_by_capability_key, supports
-from .errors import ApiError
+from .errors import ApiError, issue
 from .query import TemplateListQuery
 
 
@@ -221,19 +221,28 @@ def build_order_by(
         # A direction on its own has nothing to order, and ignoring it looks exactly like a
         # backend that cannot sort -- which hides the client bug instead of reporting it.
         if query.orderByDirection is not None:
+            message = (
+                "orderByDirection was given without orderByField, so there is nothing to order by."
+            )
             raise ApiError.bad_request(
-                "orderByDirection was given without orderByField, so there is nothing to order by.",
-                {"orderByDirection": query.orderByDirection},
+                message,
+                [issue("orderByDirection", message)],
+                orderByDirection=query.orderByDirection,
             )
         return None
 
     field = ORDER_BY_FIELD_TO_PYTHON[query.orderByField]
     capability = order_by_capability_key(field)
     if not supports(capabilities, capability):
-        raise ApiError.bad_request(
+        message = (
             f"The configured template backend cannot order by '{query.orderByField}'. "
-            f"GET /capabilities lists the fields it can order by.",
-            {"orderByField": query.orderByField, "capability": capability},
+            f"GET /capabilities lists the fields it can order by."
+        )
+        raise ApiError.bad_request(
+            message,
+            [issue("orderByField", message)],
+            orderByField=query.orderByField,
+            capability=capability,
         )
 
     order_by: dict[str, str] = {
