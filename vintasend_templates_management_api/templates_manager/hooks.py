@@ -41,8 +41,8 @@ from . import conf
 
 logger = logging.getLogger(__name__)
 
-ActorResolver = Callable[[HttpRequest], "str | None | Awaitable[str | None]"]
-UnhandledErrorHandler = Callable[[Exception, HttpRequest, str], "None | Awaitable[None]"]
+ActorResolver = Callable[[HttpRequest], "str | Awaitable[str | None] | None"]
+UnhandledErrorHandler = Callable[[Exception, HttpRequest, str], "Awaitable[None] | None"]
 
 REQUEST_ID_HEADER = "X-Request-Id"
 
